@@ -33,6 +33,7 @@ architecture rtl of keypad_scanner is
 
     signal col_reg          : std_logic_vector(3 downto 0)  := (others => '0');
     signal btn_out          : std_logic_vector(3 downto 0)  := (others => '0');
+    signal btn_out_prev     : std_logic_vector(3 downto 0)  := (others => '0');
 
     signal key_reg          : std_logic_vector(4 downto 0)  := "11111";
     signal key_pressed      : std_logic                     := '0';     -- does nothing, but i leave it here for future use.
@@ -85,7 +86,7 @@ begin
     key_mapping : entity work.keypad_map
         port map(
             row_index       => row_index,
-            debounced_col   => col_reg,
+            debounced_col   => btn_out,
             decoded_btn     => key_reg
         );
 
@@ -105,6 +106,8 @@ begin
 
         elsif rising_edge(clk) then
 
+            btn_out_prev <= btn_out;
+
             case state is
 
                 when IDLE =>
@@ -120,6 +123,9 @@ begin
                     if col /= "0000" then
                         col_reg <= col;
                         state <= CALC;
+                    elsif row_index = 3 then
+                        row_index <= 0;
+                        row <= row_pattern(0);
                     else
                         row_index <= row_index + 1;
                         row <= row_pattern(row_index + 1);
@@ -134,7 +140,7 @@ begin
 
                 when DEBOUNCE =>
 
-                    if btn_out /= "0000" then
+                    if btn_out /= "0000" and btn_out_prev = "0000" then
                         key_code <= key_reg;
                         key_pressed <= '1';
                     else

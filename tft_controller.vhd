@@ -31,20 +31,21 @@ architecture rtl of tft_controller is
     signal state                : std_logic_vector(3 downto 0) := IDLE;
     signal state_register       : std_logic_vector(3 downto 0) := IDLE;
   
-
-
     -- counter
     constant ROW1               : integer                       := 0;
     constant ROW14              : integer                       := 13;
     constant LAST_ROW           : integer                       := 14;
     constant HACK_TO_FIX        : integer                       := 15;
     constant WAIT_FOR_KEYPAD    : integer                       := 16;
-    constant WRITE_MODE         : integer                       := 17;
+    constant DRAW_MODE          : integer                       := 17;
 
     -- drawing states
-    constant DRAW_STATE1        : integer                       := 18;
-    constant DRAW_STATE2        : integer                       := 19;
-    constant DRAW_STATE3        : integer                       := 20;
+    constant DRAW_STATE1        : std_logic_vector(3 downto 0)  := "0001";
+    constant DRAW_STATE2        : std_logic_vector(3 downto 0)  := "0010";
+    constant DRAW_STATE3        : std_logic_vector(3 downto 0)  := "0011";
+    constant DRAW_STATE4        : std_logic_vector(3 downto 0)  := "0100";
+    constant DRAW_STATE_CMD     : std_logic_vector(3 downto 0)  := "1111";
+    signal draw_state           : std_logic_vector(3 downto 0)  := DRAW_STATE1;
 
     -- key_code
     constant NUM1               : std_logic_vector(4 downto 0)  := "01110";
@@ -62,7 +63,7 @@ architecture rtl of tft_controller is
     type array_of_underline_pos is array(0 to 7) of std_logic_vector(8 downto 0);
     signal underline_pos_row    : array_of_underline_pos;
     signal underline_pos_col    : array_of_underline_pos;
-    signal underline_integer    : integer range 0 to 15             := 0;
+    signal underline_integer    : integer range 0 to 31             := 0;
 
     type array_of_commands is array(0 to 5) of std_logic_vector(8 downto 0);
     signal dynamic_commands     : array_of_commands;
@@ -108,20 +109,20 @@ begin
                 dynamic_data_array(8) <= '1' & x"00";
                 dynamic_data_array(9) <= '1' & x"00";
 
-                underline_pos_row(0) <= '1' & std_logic_vector(to_unsigned(209,8));
-                underline_pos_row(1) <= '1' & std_logic_vector(to_unsigned(216,8));
-                underline_pos_row(2) <= '1' & std_logic_vector(to_unsigned(223,8));
-                underline_pos_row(3) <= '1' & std_logic_vector(to_unsigned(230,8));
-                underline_pos_row(4) <= '1' & std_logic_vector(to_unsigned(225,8));
-                underline_pos_row(5) <= '1' & std_logic_vector(to_unsigned(232,8));
-                underline_pos_row(6) <= '1' & std_logic_vector(to_unsigned(233,8));
-                underline_pos_row(7) <= '1' & std_logic_vector(to_unsigned(240,8));
+                underline_pos_row(0) <= '1' & std_logic_vector(to_unsigned(208,8));
+                underline_pos_row(1) <= '1' & std_logic_vector(to_unsigned(215,8));
+                underline_pos_row(2) <= '1' & std_logic_vector(to_unsigned(224,8));
+                underline_pos_row(3) <= '1' & std_logic_vector(to_unsigned(231,8));
+                underline_pos_row(4) <= '1' & std_logic_vector(to_unsigned(240,8));
+                underline_pos_row(5) <= '1' & std_logic_vector(to_unsigned(247,8));
+                underline_pos_row(6) <= '1' & x"00";                                    -- 256
+                underline_pos_row(7) <= '1' & x"07";                                    -- 263
 
                 underline_pos_col(0) <= '1' & std_logic_vector(to_unsigned(80,8));
                 underline_pos_col(1) <= '1' & std_logic_vector(to_unsigned(96,8));
                 underline_pos_col(2) <= '1' & std_logic_vector(to_unsigned(112,8));
                 underline_pos_col(3) <= '1' & std_logic_vector(to_unsigned(128,8));
-                underline_pos_col(4) <= '1' & std_logic_vector(to_unsigned(0,8));
+                underline_pos_col(4) <= '1' & x"01";                                    -- hack to obtain > 255 in row
                 underline_pos_col(5) <= '1' & std_logic_vector(to_unsigned(0,8));
                 underline_pos_col(6) <= '1' & std_logic_vector(to_unsigned(0,8));
                 underline_pos_col(7) <= '1' & std_logic_vector(to_unsigned(0,8));
@@ -175,11 +176,32 @@ begin
                     dynamic_data_array(7) <= '1' & x"40";
                     state <= EXEC_CASET;
                     state_register <= EXEC_RAMWR;
+
                 when HACK_TO_FIX =>
+                    counter <= counter + 1;
                     state <= DONE; -- This is hack, to be fixed. Problem because apparently need to oled_request_reg <= '1';
 
                 when WAIT_FOR_KEYPAD =>
-                    if keyin = ENTER then
+                    case keyin is
+                    when ENTER =>
+                        case underline_integer is
+                        when 0 =>
+                            draw_state <= DRAW_STATE1;
+                            counter <= DRAW_MODE;
+                        when 1 to 12 =>
+                            draw_state <= DRAW_STATE2;
+                            counter <= DRAW_MODE;
+                        when others =>
+                            null;
+                        end case;
+                    when others =>
+                        null;
+                    end case;
+
+                when DRAW_MODE =>
+
+                    case draw_state is
+                    when DRAW_STATE1 =>
                         dynamic_data_array(0) <= '1' & x"00";
                         dynamic_data_array(1) <= underline_pos_col(0);
                         dynamic_data_array(2) <= '1' & x"00";
@@ -192,55 +214,77 @@ begin
                         dynamic_data_array(9) <= '1' & x"FF";
                         state <= EXEC_CASET;
                         state_register <= UNDERLINE;
-                        underline_integer <= 0;
-                        counter <= WRITE_MODE;
-                    end if;
 
-                when WRITE_MODE =>
-                    if keyin = ENTER then
-                        counter <= DRAW_STATE1;
-                    end if;
+                        underline_integer <= 1;
+                        counter <= WAIT_FOR_KEYPAD;
 
-                when DRAW_STATE1 =>
-                    dynamic_data_array(0) <= '1' & x"00";
-                    dynamic_data_array(1) <= underline_pos_col(0);
-                    dynamic_data_array(2) <= '1' & x"00";
-                    dynamic_data_array(3) <= underline_pos_col(0);
-                    dynamic_data_array(4) <= '1' & x"00";
-                    dynamic_data_array(5) <= underline_pos_row(0);
-                    dynamic_data_array(6) <= '1' & x"00";
-                    dynamic_data_array(7) <= underline_pos_row(1);
-                    dynamic_data_array(8) <= '1' & x"00";
-                    dynamic_data_array(9) <= '1' & x"00";
-                    state <= EXEC_CASET;
-                    state_register <= UNDERLINE;
-                    --if underline_integer = 12 then
-                        --counter <= WAIT_FOR_KEYPAD;
-                    --    underline_integer <= 0;
-                    --else
-                        counter <= DRAW_STATE2;
-                    --end if;
+                    when DRAW_STATE2 =>
 
-                when DRAW_STATE2 =>
-                    dynamic_data_array(0) <= '1' & x"00";
-                    dynamic_data_array(1) <= underline_pos_col(0);
-                    dynamic_data_array(2) <= '1' & x"00";
-                    dynamic_data_array(3) <= underline_pos_col(0);
-                    dynamic_data_array(4) <= '1' & x"00";
-                    dynamic_data_array(5) <= underline_pos_row(2);
-                    dynamic_data_array(6) <= '1' & x"00";
-                    dynamic_data_array(7) <= underline_pos_row(3);
-                    dynamic_data_array(8) <= '1' & x"FF";
-                    dynamic_data_array(9) <= '1' & x"FF";
-                    state <= EXEC_CASET;
-                    state_register <= UNDERLINE;
-                    --underline_integer <= underline_integer + 1;
-                    --if underline_integer = 11 then
-                    --    counter <= DRAW_STATE1;
-                    --else
-                        counter <= WRITE_MODE;
-                    --end if;
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col((underline_integer-1) / 4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col((underline_integer-1) / 4);
+                        --dynamic_data_array(4) <= '1' & x"00";
+                        dynamic_data_array(5) <= underline_pos_row((2*((underline_integer-1) mod 4)));
+                        --dynamic_data_array(6) <= '1' & x"00";
+                        dynamic_data_array(7) <= underline_pos_row((2*((underline_integer-1) mod 4))+1);
+                        dynamic_data_array(8) <= '1' & x"00";
+                        dynamic_data_array(9) <= '1' & x"00";
 
+                        if ((underline_integer-1) mod 4) = 3 then
+                            dynamic_data_array(4) <= underline_pos_col(4);
+                            dynamic_data_array(6) <= underline_pos_col(4);
+                        else
+                            dynamic_data_array(4) <= '1' & x"00";
+                            dynamic_data_array(6) <= '1' & x"00";
+                        end if;
+
+                        state <= EXEC_CASET;
+                        state_register <= UNDERLINE;
+
+                        if (underline_integer-1) = 11 then
+                            counter <= WAIT_FOR_KEYPAD;
+                            underline_integer <= 0;
+                        else
+                            underline_integer <= underline_integer + 1; 
+                            draw_state <= DRAW_STATE3;
+                        end if;
+
+                    when DRAW_STATE3 =>
+
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col((underline_integer-1) / 4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col((underline_integer-1) / 4);
+                        --dynamic_data_array(4) <= '1' & x"00";
+                        dynamic_data_array(5) <= underline_pos_row((2*((underline_integer-1) mod 4)));
+                        --dynamic_data_array(6) <= '1' & x"00";
+                        dynamic_data_array(7) <= underline_pos_row((2*((underline_integer-1) mod 4))+1);
+                        dynamic_data_array(8) <= '1' & x"FF";
+                        dynamic_data_array(9) <= '1' & x"FF";
+
+                        if ((underline_integer-1) mod 4) = 3 then
+                            dynamic_data_array(4) <= underline_pos_col(4);
+                            dynamic_data_array(6) <= underline_pos_col(4);
+                        else
+                            dynamic_data_array(4) <= '1' & x"00";
+                            dynamic_data_array(6) <= '1' & x"00";
+                        end if;
+
+                        state <= EXEC_CASET;
+                        state_register <= UNDERLINE;
+                        counter <= WAIT_FOR_KEYPAD; 
+
+                    when DRAW_STATE4 =>
+
+                    when DRAW_STATE_CMD =>
+
+                    when others =>
+                        null;
+                    end case;
+
+                when others =>
+                    null;
                 end case;
 
             when EXEC_CASET =>
@@ -378,14 +422,14 @@ begin
                         if frameBufferLowNibble = '0' then
                             cmd_controller <= dynamic_data_array(8);
                             pixelCounter <= pixelCounter + 1;
-                            if counterPerPixel = 127 then
-                                if wordCounter < 39 then
-                                    wordCounter <= wordCounter + 1;
-                                end if;
-                                    counterPerPixel <= 0;
-                            else
-                                counterPerPixel <= counterPerPixel + 1;
-                            end if;
+                            --if counterPerPixel = 127 then
+                            --    if wordCounter < 39 then
+                            --        wordCounter <= wordCounter + 1;
+                            --    end if;
+                            --        counterPerPixel <= 0;
+                            --else
+                            --    counterPerPixel <= counterPerPixel + 1;
+                            --end if;
                         else
                             cmd_controller <= dynamic_data_array(9);
                         end if;
@@ -399,7 +443,7 @@ begin
                         --currentRowNumber_reg <= currentRowNumber_reg + 1;
                         dynamic_data_array(8) <= '1' & x"00";
                         dynamic_data_array(9) <= '1' & x"00";
-                        state <= LOP;
+                        state <= DONE;
                     end if;
 
                 end if;
@@ -408,7 +452,7 @@ begin
                 oled_request_reg <= '1';
                 --exec_done <= '1';
                 state     <= LOP;
-                counter <= counter + 1;
+                --counter <= counter + 1;
 
             when others =>
                 null;

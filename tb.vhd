@@ -3,7 +3,7 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity tb is
-end entity;
+end entity tb;
 
 architecture rtl of tb is
 
@@ -14,6 +14,10 @@ architecture rtl of tb is
     signal tft_cs          : std_logic;
     signal tft_dc          : std_logic;
     signal tft_reset       : std_logic;
+    signal reset           : std_logic;
+    signal row             : std_logic_vector(3 downto 0);
+    signal col             : std_logic_vector(3 downto 0);
+    signal key_code        : std_logic_vector(4 downto 0);
 
     signal wordAddress      : integer range 0 to 512                         := 0;
     signal pixelData        : std_logic_vector(127 downto 0)    := (others => '0');
@@ -22,7 +26,8 @@ architecture rtl of tb is
     signal charOutput_toBeSent  : std_logic_vector(7 downto 0)  := (others => '0');
 
     type charArray is array (0 to 14) of std_logic_vector(7 downto 0); -- Array for char outputs
-    signal charOutputArray : charArray;
+    signal charOutputArray1 : charArray;
+    signal charOutputArray2 : charArray;
     
     type string_array is array (0 to 14) of string(1 to 40);
     constant page1_STRINGS : string_array := (
@@ -43,21 +48,40 @@ architecture rtl of tb is
         "- - - - - - - - - -- - - - - - - - - - -"   -- Row 15
     );
 
-    signal cmd_controller      : std_logic_vector(8 downto 0) := (others => '0');
-    signal oled_ready          : std_logic  := '0';
-    signal oled_request        : std_logic  := '0';
-    signal exec_done           : std_logic  := '0';
+    constant page2_STRINGS : string_array := (
+        "                                        ",  -- Row 1
+        "          Nanopulse Controller          ",  -- Row 2
+        "- - - - - - - - - -- - - - - - - - - - -",  -- Row 3
+        "|  Power  voltage  status              |",  -- Row 4
+        "|    1    0 0 0 0   0 0 0              |",  -- Row 5
+        "|    2    0 0 0 0   0 0 0              |",  -- Row 6
+        "|    3    0 0 0 0   0 0 0     FIRE     |",  -- Row 7
+        "|    4    0 0 0 0   0 0 0              |",  -- Row 8
+        "|    5    0 0 0 0   0 0 0              |",  -- Row 9
+        "|    6    0 0 0 0   0 0 0              |",  -- Row 10
+        "|                                      |",  -- Row 11
+        "|                                      |",  -- Row 12
+        "|                                      |",  -- Row 13
+        "|                                      |",  -- Row 14
+        "- - - - - - - - - -- - - - - - - - - - -"   -- Row 15
+    );
 
+    signal cmd_controller      : std_logic_vector(8 downto 0) := (others => '0');
+    signal oled_ready          : std_logic := '0';
+    signal oled_request        : std_logic := '0';
+    signal exec_done           : std_logic := '0';
+    signal currentPage         : std_logic := '0';
+    signal key_reg             : std_logic_vector(4 downto 0) := "00000";
 
 begin
 
     -- Text engine instantiation
     te: entity work.textEngine
         port map (
-            clk          => clk,
-            wordAddress  => wordAddress,
-            pixelData    => pixelData,
-            charOutput   => charOutput_toBeSent
+            clk                         => clk,
+            wordAddress                 => wordAddress,
+            pixelData                   => pixelData,
+            charOutput                  => charOutput_toBeSent
         );
 
     -- Screen instantiation
@@ -84,7 +108,17 @@ begin
             oled_ready          => oled_ready,
             oled_request        => oled_request,
             exec_done           => exec_done,
-            currentRowNumber    => currentRowNumber
+            currentRowNumber    => currentRowNumber,
+            keyin               => key_reg
+        );
+
+    scanner : entity work.keypad_scanner
+        port map(
+            clk         => clk,
+            reset       => reset,
+            row         => row,
+            col         => col,
+            key_code    => key_reg
         );
 
     -- wordAddress is counter for which letter out of the 40 letters in the sentence.
@@ -94,168 +128,65 @@ begin
 
     -- string is not synthesizable (cannot be input), can be work by using brute force generic.
 
+    -- pixelCounter counts 5120 in the row
+
+    -- wordCounter --> wordAddress --> textRow --> charOutputArray --> charOutput_toBeSent --> pixelData(textEngine)(16x8) --> pixelData(screen)
+
+    -- wordCounter counts the 40 letter sentence --> wordAddress --> textRow points to that letter, store that letter in charOutputArray
+    -- Based on currentRowNumber, charOutput_toBeSent will point to letter from that row.
+
+    -- NOTE: basically all 15 instances of textRow, will have pointer move from 0 to 39 words, but currentRowNumber picks the row.
+    -- NOTE: tried to summarize into 1 instance, not possible because string is not synthesizable
+
+    -- Goal 2 : move EXEC out of oled_impl          -- complete
+    -- Goal 3 : background color for each char      -- abandoned
+    -- Goal 4 : individual char modify              -- ongoing
+
+    gen_page1: for i in 0 to 14 generate
     t1: entity work.textRow
         generic map (
             ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(0)
-            )
+            INIT_STRING     => page1_STRINGS(i) -- Use strings from page1
+        )
         port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(0)
+            clk                         => clk,
+            which_letter_in_sentence    => wordAddress,
+            outByte                     => charOutputArray1(i) -- Output to charOutputArray1
         );
+    end generate;
 
+    gen_page2: for i in 0 to 14 generate
     t2: entity work.textRow
         generic map (
             ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(1)
-            )
+            INIT_STRING     => page2_STRINGS(i) -- Use strings from page2
+        )
         port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(1)
+            clk                         => clk,
+            which_letter_in_sentence    => wordAddress,
+            outByte                     => charOutputArray2(i) -- Output to charOutputArray1
         );
-    t3: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(2)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(2)
-        );
-    t4: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(3)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(3)
-        );
-    t5: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(4)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(4)
-        );
-    t6: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(5)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(5)
-        );
-    t7: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(6)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(6)
-        );
-    t8: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(7)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(7)
-        );
-    t9: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(8)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(8)
-        );
-    t10: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(9)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(9)
-        );
-    t11: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(10)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(10)
-        );
-    t12: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(11)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(11)
-        );
-    t13: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(12)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(12)
-        );
-    t14: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(13)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(13)
-        );
-    t15: entity work.textRow
-        generic map (
-            ADDRESS_OFFSET  => 0,
-            INIT_STRING     => page1_STRINGS(14)
-            )
-        port map (
-            clk         => clk,
-            readAddress => wordAddress,
-            outByte     => charOutputArray(14)
-        );
+    end generate;
 
-    process(currentRowNumber, charOutputArray)
+    process(currentRowNumber, charOutputArray1,charOutputArray2, currentPage)
     variable rowIndex : integer := 0;
     begin
         rowIndex := to_integer(unsigned(currentRowNumber)); -- Convert currentRowNumber to integer
         if rowIndex >= 0 and rowIndex < 15 then
-            charOutput_toBeSent <= charOutputArray(rowIndex);
+            if currentPage = '0' then
+                charOutput_toBeSent <= charOutputArray1(rowIndex);
+            elsif currentPage = '1' then
+                charOutput_toBeSent <= charOutputArray2(rowIndex);
+            else
+                charOutput_toBeSent <= charOutputArray1(rowIndex);
+            end if;
         else
-            charOutput_toBeSent <= charOutputArray(0); -- Default to first charOutput
+            charOutput_toBeSent <= charOutputArray1(rowIndex); -- Default to first charOutput
         end if;
     end process;
+
+    key_code <= key_reg;
+
 
     clk_gen : process
     begin
@@ -265,6 +196,20 @@ begin
         wait for (freq_clk/2);
     end process;
 
+    process
+    begin
+        wait for 340 ms;  -- Initial wait before entering the loop
+    
+        for i in 0 to 9 loop  -- Looping for 50 ms in 5 ms intervals (10 iterations)
+            if row = "1000" then
+                col <= "1000";
+            else
+                col <= "0000";
+            end if;
+            wait for 5 ms;  -- Small delay within the loop
+        end loop;
+    
+    end process;
 end architecture;
 
 

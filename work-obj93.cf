@@ -1,0 +1,30 @@
+v 4
+file . "tft_ili9341.vhd" "1aa407af9b1425d6261df9151ffe410944684e2d" "20250218091508.217":
+  entity tft_ili9341 at 1( 0) + 0 on 29;
+  architecture rtl of tft_ili9341 at 27( 798) + 0 on 30;
+file . "text.vhd" "69be997ecb9f8aa1f6a23eccf975fda7b1ecfc45" "20250218091341.428":
+  entity textrow at 1( 0) + 0 on 19;
+  architecture rtl of textrow at 17( 455) + 0 on 20;
+  entity textengine at 47( 1343) + 0 on 21;
+  architecture rtl of textengine at 60( 1752) + 0 on 22;
+file . "debounce_module.vhd" "4e54f02cba8b3b3e8b304d2054ad9c3f746df69a" "20250218091322.974":
+  entity debounce_module at 1( 0) + 0 on 15;
+  architecture rtl of debounce_module at 16( 331) + 0 on 16;
+file . "clk_enable_debounce.vhd" "392633874ed779e31bea7bb7e0ab01d27d0e6b03" "20250218091309.456":
+  entity clk_enable_debounce at 1( 0) + 0 on 11;
+  architecture rtl of clk_enable_debounce at 15( 218) + 0 on 12;
+file . "keypad_map.vhd" "62e8c61318615a4e26abfdff25619909b4d54eb1" "20250218091924.106":
+  entity keypad_map at 1( 0) + 0 on 33;
+  architecture rtl of keypad_map at 14( 299) + 0 on 34;
+file . "keypad_scanner.vhd" "73610982ec2a4b1e6e0943ac66826abe6235e538" "20250218091930.817":
+  entity keypad_scanner at 1( 0) + 0 on 35;
+  architecture rtl of keypad_scanner at 18( 463) + 0 on 36;
+file . "tft_controller.vhd" "3bf68253939cd3c25fd3c0d2f06c3fe0b0a53210" "20250218091456.018":
+  entity tft_controller at 1( 0) + 0 on 25;
+  architecture rtl of tft_controller at 19( 639) + 0 on 26;
+file . "tft_ili9341_spi.vhd" "f51f0e84fa97191bd8599cc851490d4454bdea27" "20250218091505.868":
+  entity tft_ili9341_spi at 1( 0) + 0 on 27;
+  architecture rtl of tft_ili9341_spi at 18( 488) + 0 on 28;
+file . "tb.vhd" "99e359f0698e1b0a4ab2a5c49a2b61c614018659" "20250218095155.360":
+  entity tb at 1( 0) + 0 on 49;
+  architecture rtl of tb at 8( 99) + 0 on 50;
