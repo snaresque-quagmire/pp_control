@@ -176,6 +176,8 @@ begin
                 charOutput_toBeSent <= charOutputArray1(rowIndex);
             elsif currentPage = '1' then
                 charOutput_toBeSent <= charOutputArray2(rowIndex);
+            else
+                charOutput_toBeSent <= charOutputArray1(rowIndex);
             end if;
         else
             charOutput_toBeSent <= charOutputArray1(rowIndex); -- Default to first charOutput
