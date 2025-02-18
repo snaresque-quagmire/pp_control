@@ -18,11 +18,12 @@ entity top is
 end entity top;
 
 architecture rtl of top is
-    signal wordAddress      : integer range 0 to 512                         := 0;
+    signal wordAddress      : integer range 0 to 512            := 0;
     signal pixelData        : std_logic_vector(127 downto 0)    := (others => '0');
     signal currentRowNumber : std_logic_vector(3 downto 0)      := (others => '0');
 
     signal charOutput_toBeSent  : std_logic_vector(7 downto 0)  := (others => '0');
+
 
     type charArray is array (0 to 14) of std_logic_vector(7 downto 0); -- Array for char outputs
     signal charOutputArray1 : charArray;
@@ -137,9 +138,10 @@ begin
     -- NOTE: basically all 15 instances of textRow, will have pointer move from 0 to 39 words, but currentRowNumber picks the row.
     -- NOTE: tried to summarize into 1 instance, not possible because string is not synthesizable
 
-    -- Goal 2 : move EXEC out of oled_impl          -- complete
-    -- Goal 3 : background color for each char      -- abandoned
-    -- Goal 4 : individual char modify              -- ongoing
+    -- Goal 2 : move EXEC out of oled_impl              -- complete
+    -- Goal 3 : background color for each char          -- ongoing
+    -- Goal 4 : individual char modify                  -- complete
+    -- Goal 5 : multiplexer to reuse te instantiation   -- future-works
 
     gen_page1: for i in 0 to 14 generate
     t1: entity work.textRow
