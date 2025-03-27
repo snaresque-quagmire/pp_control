@@ -139,7 +139,7 @@ begin
     -- NOTE: tried to summarize into 1 instance, not possible because string is not synthesizable
 
     -- Goal 2 : move EXEC out of oled_impl              -- complete
-    -- Goal 3 : background color for each char          -- ongoing
+    -- Goal 3 : background color for each char          -- complete
     -- Goal 4 : individual char modify                  -- complete
     -- Goal 5 : multiplexer to reuse te instantiation   -- future-works
 
@@ -169,7 +169,7 @@ begin
         );
     end generate;
 
-    process(currentRowNumber, charOutputArray1,charOutputArray2, currentPage)
+    process(currentRowNumber, charOutputArray1, charOutputArray2, currentPage)
     variable rowIndex : integer := 0;
     begin
         rowIndex := to_integer(unsigned(currentRowNumber)); -- Convert currentRowNumber to integer

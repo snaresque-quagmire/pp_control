@@ -25,15 +25,16 @@ architecture rtl of keypad_scanner is
     signal row_index   : integer range 0 to 3           := 0;
 
     signal slow_clk_enable      : std_logic                 := '0';
-    signal Q0_col           : std_logic_vector(3 downto 0);
-    signal Q1_col           : std_logic_vector(3 downto 0);
-    signal Q2_col           : std_logic_vector(3 downto 0);
-    signal Q2_bar_col       : std_logic_vector(3 downto 0);
-    signal debounced_col    : std_logic_vector(3 downto 0);
+    signal Q0_col           : std_logic_vector(15 downto 0);
+    signal Q1_col           : std_logic_vector(15 downto 0);
+    signal Q2_col           : std_logic_vector(15 downto 0);
+    signal Q2_bar_col       : std_logic_vector(15 downto 0);
+    signal debounced_col    : std_logic_vector(15 downto 0);
 
-    signal col_reg          : std_logic_vector(3 downto 0)  := (others => '0');
-    signal btn_out          : std_logic_vector(3 downto 0)  := (others => '0');
-    signal btn_out_prev     : std_logic_vector(3 downto 0)  := (others => '0');
+    signal col_reg          : std_logic_vector(15 downto 0)  := (others => '0');
+    signal col_rdy          : std_logic_vector(15 downto 0)  := (others => '0');
+    signal btn_out          : std_logic_vector(15 downto 0)  := (others => '0');
+    signal btn_out_prev     : std_logic_vector(15 downto 0)  := (others => '0');
 
     signal key_reg          : std_logic_vector(4 downto 0)  := "11111";
     signal key_pressed      : std_logic                     := '0';     -- does nothing, but i leave it here for future use.
@@ -63,7 +64,7 @@ begin
         port map(
             clk             => clk,
             clk_enable      => slow_clk_enable,
-            D               => col,
+            D               => col_rdy,
             Q               => Q0_col
         );
 
@@ -120,15 +121,17 @@ begin
 
                 when SCAN =>
 
-                    if col /= "0000" then
-                        col_reg <= col;
-                        state <= CALC;
-                    elsif row_index = 3 then
-                        row_index <= 0;
+
+                    col_reg(((4*row_index)+3) downto (4*row_index) ) <= col;
+
+                    if row_index = 3 then
+                        col_rdy <= col_reg;
                         row <= row_pattern(0);
+                        row_index <= 0;
+                        state <= CALC;
                     else
-                        row_index <= row_index + 1;
                         row <= row_pattern(row_index + 1);
+                        row_index <= row_index + 1;
                     end if;
 
                 when CALC =>
@@ -140,7 +143,7 @@ begin
 
                 when DEBOUNCE =>
 
-                    if btn_out /= "0000" and btn_out_prev = "0000" then
+                    if btn_out /= x"0000" and btn_out_prev = x"0000" then
                         key_code <= key_reg;
                         key_pressed <= '1';
                     else

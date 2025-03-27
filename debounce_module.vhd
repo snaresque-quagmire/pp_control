@@ -6,8 +6,8 @@ entity debounce_module is
     port(
         clk         : in    std_logic;
         clk_enable  : in    std_logic;
-        D           : in    std_logic_vector(3 downto 0);
-        Q           : out   std_logic_vector(3 downto 0) := "0000"
+        D           : in    std_logic_vector(15 downto 0);
+        Q           : out   std_logic_vector(15 downto 0) := (others => '0')
     );
 
 end entity;

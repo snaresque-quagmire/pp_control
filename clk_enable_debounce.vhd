@@ -14,7 +14,7 @@ end entity;
 
 architecture rtl of clk_enable_debounce is
 
-    signal counter : integer range 0 to 300_000 := 0;
+    signal counter : integer range 0 to 2_000_000 := 0;
 
 begin
 

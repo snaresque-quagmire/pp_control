@@ -37,15 +37,22 @@ architecture rtl of tft_controller is
     constant ROW14              : integer   := 13;
     constant LAST_ROW           : integer   := 14;
     constant HACK_TO_FIX        : integer   := 15;
-    constant WAIT_FOR_KEYPAD    : integer   := 16;
+    constant COMMAND_MODE       : integer   := 16;
     constant DRAW_MODE          : integer   := 17;
-    constant ENTER_MODE         : integer   := 18;
+    constant INSERT_MODE        : integer   := 18;
+
+    -- buffer
+    type buffer_array is array(0 to 11) of integer;
+    signal input_buffer         : buffer_array;
+    signal freq_buffer          : integer range 0 to 9999       := 0;
+    signal delay_timer_buffer   : integer range 0 to 9999       := 0;
+    signal pulse_num_buffer     : integer range 0 to 9999       := 0;
 
     -- drawing states
-    constant DRAW_INIT        : std_logic_vector(3 downto 0)    := "0001";
-    constant DRAW_12        : std_logic_vector(3 downto 0)      := "0010";
-    constant DRAW_STATE3        : std_logic_vector(3 downto 0)  := "0011";
-    constant DRAW_STATE4        : std_logic_vector(3 downto 0)  := "0100";
+    constant DRAW_INIT          : std_logic_vector(3 downto 0)  := "0001";
+    constant DRAW_12            : std_logic_vector(3 downto 0)  := "0010";
+    constant DRAW_CHAR          : std_logic_vector(3 downto 0)  := "0011";
+    constant DRAW_BACKGROUND    : std_logic_vector(3 downto 0)  := "0100";
     constant DRAW_STATE5        : std_logic_vector(3 downto 0)  := "0101";
     constant DRAW_STATE6        : std_logic_vector(3 downto 0)  := "0110";
     constant DRAW_STATE7        : std_logic_vector(3 downto 0)  := "0111";
@@ -63,6 +70,9 @@ architecture rtl of tft_controller is
     constant NUM7               : std_logic_vector(4 downto 0)  := "01000";
     constant NUM8               : std_logic_vector(4 downto 0)  := "00111";
     constant NUM9               : std_logic_vector(4 downto 0)  := "00110";
+    constant NUMA               : std_logic_vector(4 downto 0)  := "00101";
+    constant NUMB               : std_logic_vector(4 downto 0)  := "00100";
+    constant NUMC               : std_logic_vector(4 downto 0)  := "00011";
     constant ENTER              : std_logic_vector(4 downto 0)  := "00010";
 
     -- underline position
@@ -72,14 +82,18 @@ architecture rtl of tft_controller is
     signal underline_integer    : integer range 0 to 31             := 0;
     signal underline_flag       : std_logic                         := '1';
 
-    -- scanf
-    signal scanf_reg            : integer range 0 to 9              := 0;
-
     -- internal te
     signal not_used         : integer range 0 to 512                := 0;
     signal charPixelData    : std_logic_vector(127 downto 0)        := (others => '0');
     signal char_to_pixel    : std_logic_vector(7 downto 0)          := (others => '0');
 
+    -- internal text row
+    signal letter_pos       : integer range 0 to 40                 := 0;
+    signal fixed_string     : string(1 to 40)                       := "                                        ";
+    signal ascii_string     : std_logic_vector(7 downto 0)          := (others => '0');
+
+    -- PSU status
+    signal psu_status       : std_logic_vector(12 downto 0)          := "0000000000000";
 
     type array_of_commands is array(0 to 5) of std_logic_vector(8 downto 0);
     signal dynamic_commands     : array_of_commands;
@@ -110,7 +124,7 @@ begin
             pixelData                   => charPixelData,
             charOutput                  => char_to_pixel
         );
-    
+
     wordAddress <= wordCounter;
     inPixelData <= pixelData;
     oled_request <= oled_request_reg;
@@ -144,11 +158,25 @@ begin
                 underline_pos_col(0) <= '1' & std_logic_vector(to_unsigned(79,8));
                 underline_pos_col(1) <= '1' & std_logic_vector(to_unsigned(95,8));
                 underline_pos_col(2) <= '1' & std_logic_vector(to_unsigned(111,8));
-                underline_pos_col(3) <= '1' & std_logic_vector(to_unsigned(128,8));
-                underline_pos_col(4) <= '1' & x"01";                                    -- hack to obtain > 255 in row
+                underline_pos_col(3) <= '1' & std_logic_vector(to_unsigned(127,8));
+                underline_pos_col(4) <= '1' & std_logic_vector(to_unsigned(112,8));
                 underline_pos_col(5) <= '1' & std_logic_vector(to_unsigned(64,8));
                 underline_pos_col(6) <= '1' & std_logic_vector(to_unsigned(80,8));
                 underline_pos_col(7) <= '1' & std_logic_vector(to_unsigned(96,8));
+
+                -- initialize input_buffer
+                input_buffer(0) <= 0;
+                input_buffer(1) <= 0;
+                input_buffer(2) <= 0;
+                input_buffer(3) <= 0;
+                input_buffer(4) <= 0;
+                input_buffer(5) <= 0;
+                input_buffer(6) <= 0;
+                input_buffer(7) <= 0;
+                input_buffer(8) <= 1;
+                input_buffer(9) <= 0;
+                input_buffer(10) <= 0;
+                input_buffer(11) <= 0;
 
                 underline_integer <= 0;
 
@@ -204,16 +232,172 @@ begin
                     counter <= counter + 1;
                     state <= DONE; -- This is hack, to be fixed. Problem because apparently need to oled_request_reg <= '1';
 
-                when WAIT_FOR_KEYPAD =>
+                -- DRAW_INIT - draws underline on the first digit, then enters INSERT_MODE
+                -- NUM 3 A 6 B 9 C are used to light up HV power status 1 2 3 4 5 6 respectively
+                --      char_to_pixel is the hex data of the input
+                --      dynamic_data_array used to set rows and cols, then jumps to CASET, PASET, then CHAR_WR through DRAW_BACKGROUND
+
+                when COMMAND_MODE =>
                     case keyin is
                     when ENTER =>
                         draw_state <= DRAW_INIT;
                         counter <= DRAW_MODE;
+                    when NUM3 =>
+                        char_to_pixel <= "00110001";
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col(4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col(3);
+                        dynamic_data_array(4) <= '1' & x"00";
+                        dynamic_data_array(5) <= underline_pos_row(0);
+                        dynamic_data_array(6) <= '1' & x"00";
+                        dynamic_data_array(7) <= underline_pos_row(1);
+
+                        if psu_status(1) = '0' then
+                            dynamic_data_array(8) <= '1' & x"F8";
+                            dynamic_data_array(9) <= '1' & x"00";
+                            psu_status(1) <= '1';
+                        else
+                            dynamic_data_array(8) <= '1' & x"00";
+                            dynamic_data_array(9) <= '1' & x"00";    
+                            psu_status(1) <= '0';                        
+                        end if;
+                        draw_state <= DRAW_BACKGROUND;
+                        counter <= DRAW_MODE;
+                    when NUMA =>
+                        char_to_pixel <= "00110010";
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col(4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col(3);
+                        dynamic_data_array(4) <= '1' & x"00";
+                        dynamic_data_array(5) <= underline_pos_row(2);
+                        dynamic_data_array(6) <= '1' & x"00";
+                        dynamic_data_array(7) <= underline_pos_row(3);
+
+                        if psu_status(2) = '0' then
+                            dynamic_data_array(8) <= '1' & x"F8";
+                            dynamic_data_array(9) <= '1' & x"00";
+                            psu_status(2) <= '1';
+                        else
+                            dynamic_data_array(8) <= '1' & x"00";
+                            dynamic_data_array(9) <= '1' & x"00";    
+                            psu_status(2) <= '0';                        
+                        end if;
+                        draw_state <= DRAW_BACKGROUND;
+                        counter <= DRAW_MODE;
+                    when NUM6 =>
+                        char_to_pixel <= "00110011";
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col(4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col(3);
+                        dynamic_data_array(4) <= '1' & x"00";
+                        dynamic_data_array(5) <= underline_pos_row(4);
+                        dynamic_data_array(6) <= '1' & x"00";
+                        dynamic_data_array(7) <= underline_pos_row(5);
+
+                        if psu_status(3) = '0' then
+                            dynamic_data_array(8) <= '1' & x"F8";
+                            dynamic_data_array(9) <= '1' & x"00";
+                            psu_status(3) <= '1';
+                        else
+                            dynamic_data_array(8) <= '1' & x"00";
+                            dynamic_data_array(9) <= '1' & x"00";    
+                            psu_status(3) <= '0';                        
+                        end if;
+                        draw_state <= DRAW_BACKGROUND;
+                        counter <= DRAW_MODE;
+                    when NUMB =>
+                        char_to_pixel <= "00110100";
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col(4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col(3);
+                        dynamic_data_array(4) <= '1' & x"01";
+                        dynamic_data_array(5) <= underline_pos_row(6);
+                        dynamic_data_array(6) <= '1' & x"01";
+                        dynamic_data_array(7) <= underline_pos_row(7);
+
+                        if psu_status(4) = '0' then
+                            dynamic_data_array(8) <= '1' & x"F8";
+                            dynamic_data_array(9) <= '1' & x"00";
+                            psu_status(4) <= '1';
+                        else
+                            dynamic_data_array(8) <= '1' & x"00";
+                            dynamic_data_array(9) <= '1' & x"00";    
+                            psu_status(4) <= '0';                        
+                        end if;
+                        draw_state <= DRAW_BACKGROUND;
+                        counter <= DRAW_MODE;
+                   when NUM9 =>
+                        char_to_pixel <= "00110101";
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col(4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col(3);
+                        dynamic_data_array(4) <= '1' & x"01";
+                        dynamic_data_array(5) <= '1' & x"10";
+                        dynamic_data_array(6) <= '1' & x"01";
+                        dynamic_data_array(7) <= '1' & x"17";
+
+                        if psu_status(5) = '0' then
+                            dynamic_data_array(8) <= '1' & x"F8";
+                            dynamic_data_array(9) <= '1' & x"00";
+                            psu_status(5) <= '1';
+                        else
+                            dynamic_data_array(8) <= '1' & x"00";
+                            dynamic_data_array(9) <= '1' & x"00";    
+                            psu_status(5) <= '0';                        
+                        end if;
+                        draw_state <= DRAW_BACKGROUND;
+                        counter <= DRAW_MODE;
+                   when NUMC =>
+                        char_to_pixel <= "00110110";
+                        dynamic_data_array(0) <= '1' & x"00";
+                        dynamic_data_array(1) <= underline_pos_col(4);
+                        dynamic_data_array(2) <= '1' & x"00";
+                        dynamic_data_array(3) <= underline_pos_col(3);
+                        dynamic_data_array(4) <= '1' & x"01";
+                        dynamic_data_array(5) <= '1' & x"20";
+                        dynamic_data_array(6) <= '1' & x"01";
+                        dynamic_data_array(7) <= '1' & x"27";
+
+                        if psu_status(6) = '0' then
+                            dynamic_data_array(8) <= '1' & x"F8";
+                            dynamic_data_array(9) <= '1' & x"00";
+                            psu_status(6) <= '1';
+                        else
+                            dynamic_data_array(8) <= '1' & x"00";
+                            dynamic_data_array(9) <= '1' & x"00";    
+                            psu_status(6) <= '0';                        
+                        end if;
+                        draw_state <= DRAW_BACKGROUND;
+                        counter <= DRAW_MODE;
+
+                    when NUM1 =>
+                        freq_buffer         <= input_buffer(0)*1000 + input_buffer(1)*100 + input_buffer(2)*10 + input_buffer(3);
+                        delay_timer_buffer  <= input_buffer(4)*1000 + input_buffer(5)*100 + input_buffer(6)*10 + input_buffer(7);
+                        pulse_num_buffer    <= input_buffer(8)*1000 + input_buffer(9)*100 + input_buffer(10)*10 + input_buffer(11);
+                    when NUM2 =>
+
+                    when NUM4 =>
+
+                    when NUM5 =>
+
+                    when NUM7 =>
+
+                    when NUM8 =>
+
                     when others =>
                         null;
                     end case;
 
-                when ENTER_MODE =>
+                -- Pressing enter will shift into next digit without changing current digit. 
+                -- DRAW_INIT itself will initialize underline_integer to 1
+                -- Pressing numbers will overwrite current digit with input
+
+                when INSERT_MODE =>
 
                     case keyin is
                     when ENTER =>
@@ -229,47 +413,65 @@ begin
                         end case;
                     when NUM1 =>
                         char_to_pixel <= "00110001";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 1;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM2 =>
                         char_to_pixel <= "00110010";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 2;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM3 =>
                         char_to_pixel <= "00110011";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 3;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM4 =>
                         char_to_pixel <= "00110100";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 4;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM5 =>
                         char_to_pixel <= "00110101";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 5;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM6 =>
                         char_to_pixel <= "00110110";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 6;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM7 =>
                         char_to_pixel <= "00110111";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 7;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM8 =>
                         char_to_pixel <= "00111000";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 8;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM9 =>
                         char_to_pixel <= "00111001";
-                        draw_state <= DRAW_STATE3;
+                        input_buffer(underline_integer-1) <= 9;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when NUM0 =>
                         char_to_pixel <= "00110000";
-                        draw_state <= DRAW_STATE3;
+                        draw_state <= DRAW_CHAR;
                         counter <= DRAW_MODE;
                     when others =>
                         null;
                     end case;
+
+                -- dynamic_data_array sets the rows and cols for EXEC_CASET and EXEC_PASET
+
+                -- DRAW_12 erases underline from previous digit, and draws underline under the next digit
+                -- underline_flag is initialized '1'. 
+                -- Thus, 1st iteration will erase underline, then increment underline_integer += 1, 
+                -- 2nd iteration will draw underline, then return to INSERT_MODE.
+
+                -- DRAW_CHAR sets dynamic_data_array, then jumps to CASET, PASET, then CHAR_WR
 
                 when DRAW_MODE =>
 
@@ -289,11 +491,10 @@ begin
                         state_register <= UNDERLINE;
 
                         underline_integer <= 1;
-                        counter <= ENTER_MODE;
+                        counter <= INSERT_MODE;
 
                     when DRAW_12 =>
                         
-                        -- underline_flag  '1'remove underline  '0'draw underline
                         dynamic_data_array(0) <= '1' & x"00";
                         dynamic_data_array(1) <= underline_pos_col((underline_integer-1) / 4);
                         dynamic_data_array(2) <= '1' & x"00";
@@ -301,6 +502,7 @@ begin
                         dynamic_data_array(5) <= underline_pos_row((2*((underline_integer-1) mod 4)));
                         dynamic_data_array(7) <= underline_pos_row((2*((underline_integer-1) mod 4))+1);
 
+                        -- underline_flag  '1'remove underline  '0'draw underline
                         if underline_flag = '1' then
                             dynamic_data_array(8) <= '1' & x"00";
                             dynamic_data_array(9) <= '1' & x"00";
@@ -309,9 +511,10 @@ begin
                             dynamic_data_array(9) <= '1' & x"FF";
                         end if;
 
+                        -- for the last row, the pixel location is > 256, then requiring 3 digits in hex x"01XX"
                         if ((underline_integer-1) mod 4) = 3 then
-                            dynamic_data_array(4) <= underline_pos_col(4);
-                            dynamic_data_array(6) <= underline_pos_col(4);
+                            dynamic_data_array(4) <= '1' & x"01";
+                            dynamic_data_array(6) <= '1' & x"01";
                         else
                             dynamic_data_array(4) <= '1' & x"00";
                             dynamic_data_array(6) <= '1' & x"00";
@@ -321,32 +524,31 @@ begin
                         state_register <= UNDERLINE;
                         
                         if underline_flag = '0' then
-                            counter <= ENTER_MODE;
+                            -- 2nd iteration will draw underline, then return to INSERT_MODE.
+                            counter <= INSERT_MODE;
                             underline_flag <= '1';
                         elsif (underline_integer-1) = 11 then
-                            counter <= WAIT_FOR_KEYPAD;
+                            counter <= COMMAND_MODE;
                             underline_integer <= 0;
                         else
+                            -- 1st iteration will erase underline, then increment underline_integer += 1 
                             underline_integer <= underline_integer + 1; 
                             underline_flag <= '0';
                         end if;
 
-                    when DRAW_STATE3 =>
+                    when DRAW_CHAR =>
                         if underline_flag = '1' then
                             dynamic_data_array(0) <= '1' & x"00";
                             dynamic_data_array(1) <= underline_pos_col(5 + ((underline_integer-1) / 4));
                             dynamic_data_array(2) <= '1' & x"00";
                             dynamic_data_array(3) <= underline_pos_col((underline_integer-1) / 4);
-                            --dynamic_data_array(4) <= '1' & x"00";
                             dynamic_data_array(5) <= underline_pos_row((2*((underline_integer-1) mod 4)));
-                            --dynamic_data_array(6) <= '1' & x"00";
                             dynamic_data_array(7) <= underline_pos_row((2*((underline_integer-1) mod 4))+1);
-                            dynamic_data_array(8) <= '1' & x"FF";
-                            dynamic_data_array(9) <= '1' & x"FF";
 
+                        -- for the last row, the pixel location is > 256, then requiring 3 digits in hex x"01XX"
                             if ((underline_integer-1) mod 4) = 3 then
-                                dynamic_data_array(4) <= underline_pos_col(4);
-                                dynamic_data_array(6) <= underline_pos_col(4);
+                                dynamic_data_array(4) <= '1' & x"01";
+                                dynamic_data_array(6) <= '1' & x"01";
                             else
                                 dynamic_data_array(4) <= '1' & x"00";
                                 dynamic_data_array(6) <= '1' & x"00";
@@ -362,8 +564,12 @@ begin
                             
                         end if;
 
-                    when DRAW_STATE4 =>
+                    when DRAW_BACKGROUND =>
 
+                        state <= EXEC_CASET;
+                        state_register <= CHAR_WR;
+                        counter <= COMMAND_MODE;
+                    
                     when DRAW_STATE5 =>
 
                     when DRAW_STATE6 =>
@@ -405,7 +611,7 @@ begin
                         dynamic_data_array(7) <= '1' & x"00";
                         state <= EXEC_PASET;
                     end if;
-    
+ 
                 end if;
 
             when EXEC_PASET =>
@@ -525,17 +731,19 @@ begin
                         elsif charPixelData(pixelCounter) = '0' then
 
                             if frameBufferLowNibble = '0' then
-                                cmd_controller <= '1' & x"00";
+                                cmd_controller <= dynamic_data_array(8);
                                 pixelCounter <= pixelCounter + 1;
 
                             else
-                                cmd_controller <= '1' & x"00";
+                                cmd_controller <= dynamic_data_array(9);
                             end if;
                             frameBufferLowNibble <= not frameBufferLowNibble;
                         end if;
 
                     else
                         sendDataIndex <= 0;
+                        dynamic_data_array(8) <= '1' & x"00";
+                        dynamic_data_array(9) <= '1' & x"00";
                         state <= DONE;
                     end if;
 
