@@ -10,12 +10,15 @@ entity tft_controller is
         oled_ready          : in    std_logic;
         oled_request        : out   std_logic;
         cmd_controller      : out   std_logic_vector(8 downto 0);
-        exec_done           : out   std_logic;
-        currentRowNumber    : out   std_logic_vector(3 downto 0);
+        exec_done           : in    std_logic;
+        currentRowNumber    : out   integer range 0 to 16;
         keyin               : in    std_logic_vector(4 downto 0);
         freq_buffer         : out   integer range 0 to 9999;
         delay_timer_buffer  : out   integer range 0 to 9999;
-        pulse_num_buffer    : out   integer range 0 to 9999
+        pulse_num_buffer    : out   integer range 0 to 9999;
+        operation_input     : out   std_logic;
+        operation_feedback  : in    std_logic;
+        char_to_pixel       : out   std_logic_vector(7 downto 0)
     );
 end entity;
 
@@ -73,6 +76,8 @@ architecture rtl of tft_controller is
     constant NUMA               : std_logic_vector(4 downto 0)  := "00101";
     constant NUMB               : std_logic_vector(4 downto 0)  := "00100";
     constant NUMC               : std_logic_vector(4 downto 0)  := "00011";
+    constant NUM_STAR           : std_logic_vector(4 downto 0)  := "00001";
+    constant NUM_HASH           : std_logic_vector(4 downto 0)  := "01111";
     constant ENTER              : std_logic_vector(4 downto 0)  := "00010";
 
     -- underline position
@@ -81,10 +86,6 @@ architecture rtl of tft_controller is
     signal underline_pos_col    : array_of_underline_pos;
     signal underline_integer    : integer range 0 to 31             := 0;
     signal underline_flag       : std_logic                         := '1';
-
-    -- internal te
-    signal charPixelData    : std_logic_vector(127 downto 0)        := (others => '0');
-    signal char_to_pixel    : std_logic_vector(7 downto 0)          := (others => '0');
 
     -- internal text row
     signal letter_pos       : integer range 0 to 40                 := 0;
@@ -108,22 +109,21 @@ architecture rtl of tft_controller is
     signal sendDataBytes        :   integer                         := 4;
 
     signal pixelCounter         :   integer                         := 0;
-    signal wordCounter          :   integer                         := 0;
-    signal counterPerPixel      :   integer range 0 to 127          := 0;
+    signal char_pos_count       :   integer                         := 0;
+    signal pixel_in_char_count  :   integer range 0 to 127          := 0;
     signal frameBufferLowNibble :   std_logic                       := '1';
 
     signal inPixelData          : std_logic_vector(127 downto 0);
 
+    type char_row_type is array (0 to 39) of std_logic_vector(7 downto 0);
+    type screen_buffer_type is array (0 to 14) of char_row_type;
+    signal screen_buffer    : screen_buffer_type;
+    signal dirty_row        : std_logic_vector(14 downto 0)         := (others => '1');
+
+
 begin
     
-    te_for_controller: entity work.textEngine
-        port map (
-            clk                         => clk,
-            pixelData                   => charPixelData,
-            charOutput                  => char_to_pixel
-        );
-
-    wordAddress <= wordCounter;
+    wordAddress <= char_pos_count;
     inPixelData <= pixelData;
     oled_request <= oled_request_reg;
 
@@ -184,7 +184,6 @@ begin
 
                 oled_request_reg <= '1';
                 command_index <= 0;
-                exec_done <= '0';
                 state        <= WAIT_FOR_READY;
 
             when WAIT_FOR_READY =>
@@ -206,7 +205,7 @@ begin
             when LOP =>
                 case counter is
                 when ROW1 to ROW14 =>
-                    currentRowNumber <= std_logic_vector(to_unsigned(currentRowNumber_reg,4));
+                    currentRowNumber <= currentRowNumber_reg;
                     dynamic_data_array(0) <= '1' & x"00";
                     dynamic_data_array(1) <= '1' & std_logic_vector(to_unsigned(16*currentRowNumber_reg,8));
                     dynamic_data_array(2) <= '1' & x"00";
@@ -217,8 +216,9 @@ begin
                     dynamic_data_array(7) <= '1' & x"40";
                     state <= EXEC_CASET;
                     state_register <= EXEC_RAMWR;
+                    
                 when LAST_ROW =>
-                    currentRowNumber <= std_logic_vector(to_unsigned(currentRowNumber_reg,4));
+                    currentRowNumber <= currentRowNumber_reg;
                     dynamic_data_array(0) <= '1' & x"00";
                     dynamic_data_array(1) <= '1' & x"E0";
                     dynamic_data_array(2) <= '1' & x"00";
@@ -231,6 +231,7 @@ begin
                     state_register <= EXEC_RAMWR;
 
                 when HACK_TO_FIX =>
+                    currentRowNumber <= 16;
                     counter <= counter + 1;
                     state <= DONE; -- This is hack, to be fixed. Problem because apparently need to oled_request_reg <= '1';
 
@@ -244,6 +245,9 @@ begin
                     when ENTER =>
                         draw_state <= DRAW_INIT;
                         counter <= DRAW_MODE;
+                        if operation_feedback = '1' then
+                            operation_input <= '0';
+                        end if;
                     when NUM3 =>
                         char_to_pixel <= "00110001";
                         dynamic_data_array(0) <= '1' & x"00";
@@ -378,6 +382,19 @@ begin
                         counter <= DRAW_MODE;
 
                     when NUM1 =>
+
+                    when NUM2 =>
+
+                    when NUM4 =>
+
+                    when NUM5 =>
+
+                    when NUM7 =>
+
+                    when NUM8 =>
+
+                    when NUM_STAR =>
+                        -- firing
                         freq_buffer         <=  (input_buffer(0) * 1024) - (input_buffer(0) * 24) +  -- 1000 = 1024 - 24
                                                 (input_buffer(1) * 128) - (input_buffer(1) * 28) +   -- 100 = 128 - 28
                                                 (input_buffer(2) * 8) + (input_buffer(2) * 2) +    -- 10 = 8 + 2
@@ -391,15 +408,14 @@ begin
                                                 (input_buffer(9) * 128) - (input_buffer(9) * 28) +   -- 100 = 128 - 28
                                                 (input_buffer(10) * 8) + (input_buffer(10) * 2) +    -- 10 = 8 + 2
                                                 input_buffer(11);
-                    when NUM2 =>
-
-                    when NUM4 =>
-
-                    when NUM5 =>
-
-                    when NUM7 =>
-
-                    when NUM8 =>
+                        if operation_feedback = '0' then
+                            operation_input <= '1';
+                        else
+                            operation_input <= '0';
+                        end if;
+                        
+                    when NUM_HASH =>
+                        -- estop
 
                     when others =>
                         null;
@@ -661,23 +677,23 @@ begin
                         cmd_controller <= '0' & x"2C";
                         sendDataIndex <= sendDataIndex + 1;
                         pixelCounter <= 0;
-                        wordCounter <= 0;
-                        counterPerPixel <= 0;
+                        char_pos_count <= 0;
+                        pixel_in_char_count <= 0;
 
                     elsif pixelCounter < 5120 then
 
-                        if inPixelData(counterPerPixel) = '1' then
+                        if inPixelData(pixel_in_char_count) = '1' then
 
                             if frameBufferLowNibble = '0' then
                                 cmd_controller <= '1' & x"FF";
                                 pixelCounter <= pixelCounter + 1;
-                                if counterPerPixel = 127 then
-                                    if wordCounter < 39 then
-                                        wordCounter <= wordCounter + 1;
+                                if pixel_in_char_count = 127 then
+                                    if char_pos_count < 39 then
+                                        char_pos_count <= char_pos_count + 1;
                                     end if;
-                                        counterPerPixel <= 0;
+                                        pixel_in_char_count <= 0;
                                 else
-                                    counterPerPixel <= counterPerPixel + 1;
+                                    pixel_in_char_count <= pixel_in_char_count + 1;
                                 end if;
                             else
                                 cmd_controller <= '1' & x"FF";
@@ -685,19 +701,19 @@ begin
 
                             frameBufferLowNibble <= not frameBufferLowNibble;
                         
-                        elsif inPixelData(counterPerPixel) = '0' then
+                        elsif inPixelData(pixel_in_char_count) = '0' then
 
                             if frameBufferLowNibble = '0' then
                                 cmd_controller <= '1' & x"00";
                                 pixelCounter <= pixelCounter + 1;
 
-                                if counterPerPixel = 127 then
-                                    if wordCounter < 39 then
-                                        wordCounter <= wordCounter + 1;
+                                if pixel_in_char_count = 127 then
+                                    if char_pos_count < 39 then
+                                        char_pos_count <= char_pos_count + 1;
                                     end if;                                        
-                                    counterPerPixel <= 0;
+                                    pixel_in_char_count <= 0;
                                 else
-                                    counterPerPixel <= counterPerPixel + 1;
+                                    pixel_in_char_count <= pixel_in_char_count + 1;
                                 end if;
 
                             else
@@ -708,7 +724,7 @@ begin
 
                     else
                         sendDataIndex <= 0;
-                        wordCounter <= 0;
+                        char_pos_count <= 0;
                         counter <= counter + 1;
                         currentRowNumber_reg <= currentRowNumber_reg + 1;
                         state <= LOP;
@@ -729,7 +745,7 @@ begin
 
                     elsif pixelCounter < 127 then
 
-                        if charPixelData(pixelCounter) = '1' then
+                        if PixelData(pixelCounter) = '1' then
 
                             if frameBufferLowNibble = '0' then
                                 cmd_controller <= '1' & x"FF";
@@ -741,7 +757,7 @@ begin
 
                             frameBufferLowNibble <= not frameBufferLowNibble;
                         
-                        elsif charPixelData(pixelCounter) = '0' then
+                        elsif PixelData(pixelCounter) = '0' then
 
                             if frameBufferLowNibble = '0' then
                                 cmd_controller <= dynamic_data_array(8);
@@ -795,7 +811,6 @@ begin
 
             when DONE =>
                 oled_request_reg <= '1';
-                --exec_done <= '1';
                 state     <= LOP;
                 --counter <= counter + 1;
 

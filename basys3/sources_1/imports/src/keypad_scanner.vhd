@@ -8,11 +8,12 @@ use ieee.numeric_std.all;
 entity keypad_scanner is
     Port (
         clk         : in  std_logic;
+        clk_10mhz   : in  std_logic;
         reset       : in  std_logic;
         row         : out std_logic_vector (3 downto 0);
         col         : in  std_logic_vector (3 downto 0);
         key_code    : out std_logic_vector (4 downto 0);
-        master_key  : out std_logic_vector (15 downto 0)
+        master_key  : out std_logic_vector (14 downto 0)
     );
 end;
 
@@ -45,7 +46,7 @@ architecture rtl of keypad_scanner is
     constant row2 : std_logic_vector(3 downto 0) := "0010";
     constant row3 : std_logic_vector(3 downto 0) := "0100";
     constant row4 : std_logic_vector(3 downto 0) := "1000";
-    
+        
 begin
 
     -- source: https://www.fpga4student.com/2017/08/vhdl-code-for-debouncing-buttons-on-fpga.html --
@@ -53,7 +54,8 @@ begin
     clk_enable_generator : entity work.clk_enable_debounce
         port map(
             clk             => clk,
-            slow_clk_enable => slow_clk_enable
+            slow_clk_enable => slow_clk_enable,
+            delay_time      => x"3D08F"
         );
 
     debounce_ff0 : entity work.debounce_module
@@ -166,7 +168,8 @@ begin
                     state <= SCAN0;
                     debounced_prev <= debounced_col;
                     -- master key is used to output to the 16-bit LED
-                    master_key <= col_rdy;
+                    -- master key needed only if debug, otherwise the LED is used to debug other components
+                    master_key <= debounced_col(15 downto 1);
 
 
                 when others =>
