@@ -1,3 +1,7 @@
+
+-- Adapted from https://github.com/thekroko/ili9341_fpga/blob/master/tft_ili9341_spi.sv
+-- the author of this work manually convert verilog to vhdl
+
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -45,7 +49,7 @@ begin
 
                 if internalSck = '1' then
                     tft_dc  <= internalData(8);
-                    dataShift(counter) <= internalData(7 - counter);
+                    --dataShift(counter) <= internalData(7 - counter);
                     tft_sdi <= internalData(7 - counter);
                     cs <= '1';
 

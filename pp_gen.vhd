@@ -13,9 +13,9 @@ entity pp_gen is
         --a5_vchg             : out   std_logic;
         logic_shift_en      : out   std_logic;
         master_key_0        : out   std_logic;
-        freq_buffer         : in    integer range 0 to 9999;
-        delay_timer_buffer  : in    integer range 0 to 9999;
-        pulse_num_buffer    : in    integer range 0 to 9999
+        freq_buffer         : in    unsigned(13 downto 0);
+        delay_timer_buffer  : in    unsigned(13 downto 0);
+        pulse_num_buffer    : in    unsigned(13 downto 0)
     );
 
 end entity;
@@ -41,8 +41,9 @@ architecture rtl of pp_gen is
       );
     END COMPONENT;
 
-begin
 
+begin
+      
     div_lut : bram_div
       PORT MAP (
         clka => clk,
@@ -66,8 +67,9 @@ begin
             when IDLE =>
                 if operation_input = '1' then
                     if freq_buffer > 0 and pulse_num_buffer > 0 then
+                        logic_shift_en      <= '1';
                         operation_feedback  <= '1';
-                        addr_freq_buffer    <= std_logic_vector(to_unsigned(freq_buffer,14));
+                        addr_freq_buffer    <= std_logic_vector(freq_buffer-1);
                         pulse_num_count     <= 0;
                         state               <= FIRE;
                     end if;
@@ -84,6 +86,7 @@ begin
 --                end if;
                 
                 if operation_input = '0' then
+                    logic_shift_en          <= '0';
                     operation_feedback      <= '0';
                     a4_vtrig                <= '0';
                     master_key_0            <= '0';

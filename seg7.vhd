@@ -1,5 +1,5 @@
 
--- source https://www.fpga4student.com/2017/09/vhdl-code-for-seven-segment-display.html
+-- Adapted from https://www.fpga4student.com/2017/09/vhdl-code-for-seven-segment-display.html
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -10,9 +10,9 @@ entity seven_segment_display_VHDL is
         reset               : in std_logic; -- reset
         Anode_Activate      : out std_logic_vector (3 downto 0);-- 4 Anode signals
         LED_out             : out std_logic_vector (6 downto 0);-- Cathode patterns of 7-segment display 
-        freq_buffer         : in   integer range 0 to 9999;
-        delay_timer_buffer  : in   integer range 0 to 9999;
-        pulse_num_buffer    : in   integer range 0 to 9999
+        freq_buffer         : in   unsigned(13 downto 0);
+        delay_timer_buffer  : in   unsigned(13 downto 0);
+        pulse_num_buffer    : in   unsigned(13 downto 0)
         );
 end seven_segment_display_VHDL;
 
@@ -133,9 +133,9 @@ begin
 end process;
 one_second_enable <= '1' when one_second_counter=x"5F5E0FF" else '0';
 
-output_array(0) <= freq_buffer;
-output_array(1) <= delay_timer_buffer;
-output_array(2) <= pulse_num_buffer;
+output_array(0) <= to_integer(freq_buffer);
+output_array(1) <= to_integer(delay_timer_buffer);
+output_array(2) <= to_integer(pulse_num_buffer);
 
 process(clock_100Mhz, reset)
 begin

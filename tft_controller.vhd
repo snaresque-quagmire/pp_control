@@ -10,9 +10,16 @@ entity tft_controller is
         oled_ready          : in    std_logic;
         oled_request        : out   std_logic;
         cmd_controller      : out   std_logic_vector(8 downto 0);
-        exec_done           : out   std_logic;
-        currentRowNumber    : out   std_logic_vector(3 downto 0);
-        keyin               : in    std_logic_vector(4 downto 0)
+        exec_done           : in    std_logic;
+        currentRowNumber    : out   integer range 0 to 16;
+        keyin               : in    std_logic_vector(4 downto 0);
+        freq_buffer         : out   unsigned(13 downto 0);
+        delay_timer_buffer  : out   unsigned(13 downto 0);
+        pulse_num_buffer    : out   unsigned(13 downto 0);
+        operation_input     : out   std_logic;
+        operation_feedback  : in    std_logic;
+        char_to_pixel       : out   std_logic_vector(7 downto 0);
+        currentPage         : out   std_logic
     );
 end entity;
 
@@ -21,45 +28,30 @@ architecture rtl of tft_controller is
     -- states
     constant IDLE               : std_logic_vector(3 downto 0)      := "0000";
     constant WAIT_FOR_READY     : std_logic_vector(3 downto 0)      := "0001";
-    constant EXECUTE            : std_logic_vector(3 downto 0)      := "0010";
-    constant DONE               : std_logic_vector(3 downto 0)      := "0011";
-    constant LOP                : std_logic_vector(3 downto 0)      := "0100";
-    constant EXEC_CASET         : std_logic_vector(3 downto 0)      := "0101";
-    constant EXEC_PASET         : std_logic_vector(3 downto 0)      := "0110";
-    constant EXEC_RAMWR         : std_logic_vector(3 downto 0)      := "0111";
-    constant UNDERLINE          : std_logic_vector(3 downto 0)      := "1000";
-    constant CHAR_WR            : std_logic_vector(3 downto 0)      := "1001";
+    constant LOAD_PAGE          : std_logic_vector(3 downto 0)      := "0010";
+    constant WR_FROM_BUF        : std_logic_vector(3 downto 0)      := "0011";
+    constant INPUT_TO_BUF       : std_logic_vector(3 downto 0)      := "0100";
+    constant PREP               : std_logic_vector(3 downto 0)      := "0101";
+    constant COMMAND_MODE       : std_logic_vector(3 downto 0)      := "0110";
+    constant DRAW_MODE          : std_logic_vector(3 downto 0)      := "0111";
+    constant INSERT_MODE        : std_logic_vector(3 downto 0)      := "1000";
+    constant VISUAL_MODE        : std_logic_vector(3 downto 0)      := "1001";
     signal state                : std_logic_vector(3 downto 0)      := IDLE;
-    signal state_register       : std_logic_vector(3 downto 0)      := IDLE;
-  
-    -- counter
-    constant ROW1               : integer   := 0;
-    constant ROW14              : integer   := 13;
-    constant LAST_ROW           : integer   := 14;
-    constant HACK_TO_FIX        : integer   := 15;
-    constant COMMAND_MODE       : integer   := 16;
-    constant DRAW_MODE          : integer   := 17;
-    constant INSERT_MODE        : integer   := 18;
+    signal state_return         : std_logic_vector(3 downto 0)      := IDLE;
 
-    -- buffer
-    type buffer_array is array(0 to 11) of integer;
+    -- buffer for user input digits
+    type buffer_array is array(0 to 11) of unsigned(3 downto 0);
     signal input_buffer         : buffer_array;
-    signal freq_buffer          : integer range 0 to 9999       := 0;
-    signal delay_timer_buffer   : integer range 0 to 9999       := 0;
-    signal pulse_num_buffer     : integer range 0 to 9999       := 0;
+    
+    -- buffer to store pre-calculated pixel mapping
+    type loc_array is array(0 to 24) of integer;
+    signal char_loc_array            : loc_array;
 
-    -- drawing states
-    constant DRAW_INIT          : std_logic_vector(3 downto 0)  := "0001";
-    constant DRAW_12            : std_logic_vector(3 downto 0)  := "0010";
-    constant DRAW_CHAR          : std_logic_vector(3 downto 0)  := "0011";
-    constant DRAW_BACKGROUND    : std_logic_vector(3 downto 0)  := "0100";
-    constant DRAW_STATE5        : std_logic_vector(3 downto 0)  := "0101";
-    constant DRAW_STATE6        : std_logic_vector(3 downto 0)  := "0110";
-    constant DRAW_STATE7        : std_logic_vector(3 downto 0)  := "0111";
-    constant DRAW_STATE15       : std_logic_vector(3 downto 0)  := "1111";
-    signal draw_state           : std_logic_vector(3 downto 0)  := DRAW_INIT;
+    -- buffer to write multiple letters in one button press
+    type dynamic_word_array is array(0 to 4) of std_logic_vector(7 downto 0);
+    signal word_array               : dynamic_word_array;
 
-    -- key_code
+    -- key_code states
     constant NUM0               : std_logic_vector(4 downto 0)  := "10000";
     constant NUM1               : std_logic_vector(4 downto 0)  := "01110";
     constant NUM2               : std_logic_vector(4 downto 0)  := "01101";
@@ -73,637 +65,711 @@ architecture rtl of tft_controller is
     constant NUMA               : std_logic_vector(4 downto 0)  := "00101";
     constant NUMB               : std_logic_vector(4 downto 0)  := "00100";
     constant NUMC               : std_logic_vector(4 downto 0)  := "00011";
+    constant NUM_STAR           : std_logic_vector(4 downto 0)  := "00001";
+    constant NUM_HASH           : std_logic_vector(4 downto 0)  := "01111";
     constant ENTER              : std_logic_vector(4 downto 0)  := "00010";
 
-    -- underline position
-    type array_of_underline_pos is array(0 to 7) of std_logic_vector(8 downto 0);
-    signal underline_pos_row    : array_of_underline_pos;
-    signal underline_pos_col    : array_of_underline_pos;
+    -- underline_flag for draw and delete condition
+    -- underline integer to check how many digits passed
     signal underline_integer    : integer range 0 to 31             := 0;
     signal underline_flag       : std_logic                         := '1';
 
-    -- internal te
-    signal not_used         : integer range 0 to 512                := 0;
-    signal charPixelData    : std_logic_vector(127 downto 0)        := (others => '0');
-    signal char_to_pixel    : std_logic_vector(7 downto 0)          := (others => '0');
+    -- Indicator status
+    signal psu_status       : std_logic_vector(13 downto 0)          := "00000000000000";
 
-    -- internal text row
-    signal letter_pos       : integer range 0 to 40                 := 0;
-    signal fixed_string     : string(1 to 40)                       := "                                        ";
-    signal ascii_string     : std_logic_vector(7 downto 0)          := (others => '0');
-
-    -- PSU status
-    signal psu_status       : std_logic_vector(12 downto 0)          := "0000000000000";
-
-    type array_of_commands is array(0 to 5) of std_logic_vector(8 downto 0);
-    signal dynamic_commands     : array_of_commands;
-    constant NUM_OF_CMD         :  integer                          := 5;
-    signal command_index        :  integer range 0 to NUM_OF_CMD    := 0;
-    signal oled_request_reg     :   std_logic                       := '0';
-
-    signal counter              :   integer                         := 0;
-    signal currentRowNumber_reg :   integer range 0 to 15           := 0;
+    -- counter to check how many commands are sent
     signal sendDataIndex        :   integer                         := 0;
-    type dynamic_array is array(0 to 9) of std_logic_vector(8 downto 0);
-    signal dynamic_data_array   :   dynamic_array;
-    signal sendDataBytes        :   integer                         := 4;
 
+    -- pixel handling, scr handling related signals
+    signal oled_request_reg     :   std_logic                       := '0';
     signal pixelCounter         :   integer                         := 0;
-    signal wordCounter          :   integer                         := 0;
-    signal counterPerPixel      :   integer range 0 to 127          := 0;
+    signal char_pos_count       :   integer                         := 0;
+    signal pixel_in_char_count  :   integer range 0 to 127          := 0;
+    signal cont_num             :   integer range 0 to 5            := 0;
+    signal pixel_col            :   integer range 0 to 320          := 0;
     signal frameBufferLowNibble :   std_logic                       := '1';
-
     signal inPixelData          : std_logic_vector(127 downto 0);
+    
+    -- signals to read 'out' signals
+    signal currentRowNumber_reg :   integer range 0 to 15           := 0;
+    signal freq_buffer_reg      :   unsigned(13 downto 0)           := (others => '0');
+    signal pulse_num_buffer_reg :   unsigned(13 downto 0)           := (others => '0');
+    signal delay_timer_buffer_reg  : unsigned(13 downto 0)          := (others => '0');
+
+    -- scr_rom signals
+    signal scr_wea              : std_logic_vector(0 downto 0)      := (others => '0');
+    signal scr_addr             : std_logic_vector(16 downto 0)     := (others => '0');
+    signal scr_din              : std_logic_vector(15 downto 0)     := (others => '0');
+    signal scr_dout             : std_logic_vector(15 downto 0)     := (others => '0');
+    
+    -- pixel handling
+    signal char_loc             : integer range 0 to 74880          := 0;
+    signal input_overwrite      : std_logic                         := '0';
+    signal letterColor          : std_logic_vector(15 downto 0)     := x"FFFF";
+    signal backgroundColor      : std_logic_vector(15 downto 0)     := x"0000";
+
+    -- exec_caset, exec_paset sequence. This is same for all cases as whole screen is rewritten every time.
+    type caset_paset_seq is array(0 to 9) of std_logic_vector(8 downto 0);
+    constant exec_seq : caset_paset_seq := (
+        -- Initialization Commands
+        '0' & x"2A",
+        '0' & x"00", -- Power Control B
+        '1' & x"00", 
+        '1' & x"00", -- x83, xC1
+        '1' & x"F0",
+        '0' & x"2B",
+        '1' & x"00",
+        '1' & x"00",
+        '1' & x"01",
+        '1' & x"3F"
+    );
+
+    -- store the scr buffer, 320*240 pixels
+    COMPONENT scr_buf
+    PORT (
+        clka : IN STD_LOGIC;
+        wea : IN STD_LOGIC_VECTOR(0 DOWNTO 0);
+        addra : IN STD_LOGIC_VECTOR(16 DOWNTO 0);
+        dina : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
+        douta : OUT STD_LOGIC_VECTOR(15 DOWNTO 0) 
+    );
+    END COMPONENT;
+
 
 begin
     
-    te_for_controller: entity work.textEngine
-        port map (
-            clk                         => clk,
-            wordAddress                 => not_used,
-            pixelData                   => charPixelData,
-            charOutput                  => char_to_pixel
-        );
-
-    wordAddress <= wordCounter;
-    inPixelData <= pixelData;
-    oled_request <= oled_request_reg;
-
+    scr_rom : scr_buf
+    PORT MAP (
+        clka    => clk,
+        wea     => scr_wea,
+        addra   => scr_addr,
+        dina    => scr_din,
+        douta   => scr_dout
+    );
+    
+    -- signals that are specified to be "out", cannot be read directly, need a register.
+    wordAddress         <= char_pos_count;
+    inPixelData         <= pixelData;
+    oled_request        <= oled_request_reg;
+    pulse_num_buffer    <= pulse_num_buffer_reg;
+    freq_buffer         <= freq_buffer_reg;
+    delay_timer_buffer  <= delay_timer_buffer_reg;    
+    
     process(clk)
     begin
         if rising_edge(clk) then
             case state is
             when IDLE =>
-                -- 4x PASET, 4x CASET, 2x color
-                dynamic_data_array(0) <= '1' & x"00";
-                dynamic_data_array(1) <= '1' & x"00";
-                dynamic_data_array(2) <= '1' & x"00";
-                dynamic_data_array(3) <= '1' & x"00";
-                dynamic_data_array(4) <= '1' & x"00";
-                dynamic_data_array(5) <= '1' & x"00";
-                dynamic_data_array(6) <= '1' & x"00";
-                dynamic_data_array(7) <= '1' & x"00";
-                dynamic_data_array(8) <= '1' & x"00";
-                dynamic_data_array(9) <= '1' & x"00";
-
-                underline_pos_row(0) <= '1' & std_logic_vector(to_unsigned(208,8));
-                underline_pos_row(1) <= '1' & std_logic_vector(to_unsigned(215,8));
-                underline_pos_row(2) <= '1' & std_logic_vector(to_unsigned(224,8));
-                underline_pos_row(3) <= '1' & std_logic_vector(to_unsigned(231,8));
-                underline_pos_row(4) <= '1' & std_logic_vector(to_unsigned(240,8));
-                underline_pos_row(5) <= '1' & std_logic_vector(to_unsigned(247,8));
-                underline_pos_row(6) <= '1' & x"00";                                    -- 256
-                underline_pos_row(7) <= '1' & x"07";                                    -- 263
-
-                underline_pos_col(0) <= '1' & std_logic_vector(to_unsigned(79,8));
-                underline_pos_col(1) <= '1' & std_logic_vector(to_unsigned(95,8));
-                underline_pos_col(2) <= '1' & std_logic_vector(to_unsigned(111,8));
-                underline_pos_col(3) <= '1' & std_logic_vector(to_unsigned(127,8));
-                underline_pos_col(4) <= '1' & std_logic_vector(to_unsigned(112,8));
-                underline_pos_col(5) <= '1' & std_logic_vector(to_unsigned(64,8));
-                underline_pos_col(6) <= '1' & std_logic_vector(to_unsigned(80,8));
-                underline_pos_col(7) <= '1' & std_logic_vector(to_unsigned(96,8));
 
                 -- initialize input_buffer
-                input_buffer(0) <= 0;
-                input_buffer(1) <= 0;
-                input_buffer(2) <= 0;
-                input_buffer(3) <= 0;
-                input_buffer(4) <= 0;
-                input_buffer(5) <= 0;
-                input_buffer(6) <= 0;
-                input_buffer(7) <= 0;
-                input_buffer(8) <= 1;
-                input_buffer(9) <= 0;
-                input_buffer(10) <= 0;
-                input_buffer(11) <= 0;
+                input_buffer(0) <= (others => '0');
+                input_buffer(1) <= (others => '0');
+                input_buffer(2) <= (others => '0');
+                input_buffer(3) <= (others => '0');
+                input_buffer(4) <= (others => '0');
+                input_buffer(5) <= (others => '0');
+                input_buffer(6) <= (others => '0');
+                input_buffer(7) <= (others => '0');
+                input_buffer(8) <= (others => '0');
+                input_buffer(9) <= (others => '0');
+                input_buffer(10) <= (others => '0');
+                input_buffer(11) <= (others => '0');
 
+--              char_row * 16 , char_col * 8 * 240
+                -- initialize char_loc_array, can be transferred into a rom ip in the future.
+                char_loc_array(0) <= 49984;
+                char_loc_array(1) <= 53824;
+                char_loc_array(2) <= 57664;
+                char_loc_array(3) <= 61504;
+                char_loc_array(4) <= 50000;
+                char_loc_array(5) <= 53840;
+                char_loc_array(6) <= 57680;
+                char_loc_array(7) <= 61520;
+                char_loc_array(8) <= 50016;
+                char_loc_array(9) <= 53856;
+                char_loc_array(10) <= 57696;
+                char_loc_array(11) <= 61536;
+                char_loc_array(12) <= 50032;
+                char_loc_array(13) <= 53872;
+                char_loc_array(14) <= 57712;
+                char_loc_array(15) <= 61552;
+                char_loc_array(16) <= 65392;
+                char_loc_array(17) <= 69232;
+                char_loc_array(18) <= 53920;
+                char_loc_array(19) <= 53936;
+                char_loc_array(20) <= 53952;
+                char_loc_array(21) <= 63520;
+                char_loc_array(22) <= 63536;
+                char_loc_array(23) <= 63552;
+                char_loc_array(24) <= 63568;
+
+                -- initialize word_array
+                word_array(0)           <= (others => '0');
+                word_array(1)           <= (others => '0');
+                word_array(2)           <= (others => '0');
+                word_array(3)           <= (others => '0');
+                word_array(4)           <= (others => '0');
+
+                -- initialize registers
+                freq_buffer_reg         <= (others => '0');
+                delay_timer_buffer_reg  <= (others => '0');
+                pulse_num_buffer_reg    <= (others => '0');
                 underline_integer <= 0;
 
+                currentPage <= '0';
+                -- wait for tft_ili9341.vhd to finish INIT_SEQ
                 oled_request_reg <= '1';
-                command_index <= 0;
-                exec_done <= '0';
                 state        <= WAIT_FOR_READY;
 
             when WAIT_FOR_READY =>
+            
+            -- wait for tft_ili9341.vhd to finish INIT_SEQ
                 if oled_ready = '1' then
-                    state        <= LOP;
+                    state        <= LOAD_PAGE;
+                    state_return <= COMMAND_MODE;
                 end if;
 
-            when EXECUTE =>
-                -- Send current command
-                cmd_controller <= dynamic_commands(command_index);
-                if command_index = NUM_OF_CMD then
-                    state <= DONE;
+            when LOAD_PAGE =>
+                -- iteratively (row by row) load the page1_rom (containing ascii), into 320*240 pixels
+                -- then state => WR_FROM_BUF to write the page
+                -- then return to LOP, COMMAND_MODE
+
+                if sendDataIndex = 0 then
+                    sendDataIndex <= sendDataIndex + 1;
+                    pixelCounter <= 0;
+                    char_pos_count <= 0;
+                    pixel_in_char_count <= 0;
+                    pixel_col           <= 0;
+                    currentRowNumber <= currentRowNumber_reg;
+
+                elsif pixelCounter < 5120 then
+
+--                    Pixel mapping example
+--                    00 240 420 ... ... 1920 ...  (row 1 2nd letter)
+--                    01 241 421 ... ... ...  
+--                    02 242 422 ... ... ...  
+--                    03 243 423 ... ... ...  
+--                    04 244 424 ... ... ...  
+--                    05 245 425 ... ... ...  
+--                    06 246 426 ... ... ...  
+--                    07 247 427 ... ... ...  
+--                    08 248 428 ... ... ...  
+--                    09 249 429 ... ... ...  
+--                    10 250 430 ... ... ...  
+--                    11 251 431 ... ... ...  
+--                    12 252 432 ... ... ...  
+--                    13 253 433 ... ... ...  
+--                    14 254 434 ... ... ...  
+--                    15 255 435 ... ... ...  
+--                    16 ... ... ... (row 2 first letter) 
+
+                    -- 1. Pixels have size 16*8, are loaded vertically, totalling to 128 pixels
+                    -- this complicated equation is convert pixel position, because we load character by character, thus need to map pixels individually
+
+                    scr_wea     <= "1";
+                    scr_addr    <= std_logic_vector(to_unsigned( currentRowNumber_reg * 16 + pixel_col*240 + pixelCounter mod 16  ,17));                    
+                    if inPixelData(pixel_in_char_count) = '1' then
+                        scr_din <= x"FFFF";
+                    else
+                        scr_din <= x"0000";
+                    end if;
+
+                    pixelCounter <= pixelCounter + 1;
+
+                    if pixelCounter mod 16 = 15 then
+                        pixel_col <= pixel_col + 1;
+                    end if;
+
+                    if pixel_in_char_count = 127 then
+                        if char_pos_count < 39 then
+                            char_pos_count <= char_pos_count + 1;
+                        end if;
+                        pixel_in_char_count <= 0;
+                    else
+                        pixel_in_char_count <= pixel_in_char_count + 1;
+                    end if;
+
+                elsif currentRowNumber_reg < 14 then
+                    sendDataIndex <= 0;
+                    currentRowNumber_reg <= currentRowNumber_reg + 1;
                 else
-                    command_index <= command_index + 1;
-                    state <= WAIT_FOR_READY;
-                    oled_request_reg <= '1';
+                    scr_wea       <= "0";
+                    currentRowNumber_reg <= currentRowNumber_reg + 1;
+                    currentRowNumber <= currentRowNumber_reg;
+                    sendDataIndex <= 0;
+                    char_pos_count <= 0;
+                    state <= WR_FROM_BUF;
                 end if;
 
-            when LOP =>
-                case counter is
-                when ROW1 to ROW14 =>
-                    currentRowNumber <= std_logic_vector(to_unsigned(currentRowNumber_reg,4));
-                    dynamic_data_array(0) <= '1' & x"00";
-                    dynamic_data_array(1) <= '1' & std_logic_vector(to_unsigned(16*currentRowNumber_reg,8));
-                    dynamic_data_array(2) <= '1' & x"00";
-                    dynamic_data_array(3) <= '1' & std_logic_vector(to_unsigned(15 + (16*currentRowNumber_reg),8));
-                    dynamic_data_array(4) <= '1' & x"00";
-                    dynamic_data_array(5) <= '1' & x"00";
-                    dynamic_data_array(6) <= '1' & x"01";
-                    dynamic_data_array(7) <= '1' & x"40";
-                    state <= EXEC_CASET;
-                    state_register <= EXEC_RAMWR;
-                when LAST_ROW =>
-                    currentRowNumber <= std_logic_vector(to_unsigned(currentRowNumber_reg,4));
-                    dynamic_data_array(0) <= '1' & x"00";
-                    dynamic_data_array(1) <= '1' & x"E0";
-                    dynamic_data_array(2) <= '1' & x"00";
-                    dynamic_data_array(3) <= '1' & x"EF";
-                    dynamic_data_array(4) <= '1' & x"00";
-                    dynamic_data_array(5) <= '1' & x"00";
-                    dynamic_data_array(6) <= '1' & x"01";
-                    dynamic_data_array(7) <= '1' & x"40";
-                    state <= EXEC_CASET;
-                    state_register <= EXEC_RAMWR;
 
-                when HACK_TO_FIX =>
-                    counter <= counter + 1;
-                    state <= DONE; -- This is hack, to be fixed. Problem because apparently need to oled_request_reg <= '1';
+            -- 3 A 6 B 9 C are used to light up HV power status 1 2 3 4 5 6 respectively
+            -- 1 2 4 5 7 8 are used to light up EN DIS ON OFF
+            -- STAR is used to fire
+            -- 0 is as estop
+            -- HASH is used  to change page
+            -- background color and letterColor sets corresponding color, following BGR 565, little endian 
 
-                -- DRAW_INIT - draws underline on the first digit, then enters INSERT_MODE
-                -- NUM 3 A 6 B 9 C are used to light up HV power status 1 2 3 4 5 6 respectively
-                --      char_to_pixel is the hex data of the input
-                --      dynamic_data_array used to set rows and cols, then jumps to CASET, PASET, then CHAR_WR through DRAW_BACKGROUND
-
-                when COMMAND_MODE =>
-                    case keyin is
-                    when ENTER =>
-                        draw_state <= DRAW_INIT;
-                        counter <= DRAW_MODE;
-                    when NUM3 =>
-                        char_to_pixel <= "00110001";
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(3);
-                        dynamic_data_array(4) <= '1' & x"00";
-                        dynamic_data_array(5) <= underline_pos_row(0);
-                        dynamic_data_array(6) <= '1' & x"00";
-                        dynamic_data_array(7) <= underline_pos_row(1);
-
-                        if psu_status(1) = '0' then
-                            dynamic_data_array(8) <= '1' & x"F8";
-                            dynamic_data_array(9) <= '1' & x"00";
-                            psu_status(1) <= '1';
-                        else
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";    
-                            psu_status(1) <= '0';                        
-                        end if;
-                        draw_state <= DRAW_BACKGROUND;
-                        counter <= DRAW_MODE;
-                    when NUMA =>
-                        char_to_pixel <= "00110010";
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(3);
-                        dynamic_data_array(4) <= '1' & x"00";
-                        dynamic_data_array(5) <= underline_pos_row(2);
-                        dynamic_data_array(6) <= '1' & x"00";
-                        dynamic_data_array(7) <= underline_pos_row(3);
-
-                        if psu_status(2) = '0' then
-                            dynamic_data_array(8) <= '1' & x"F8";
-                            dynamic_data_array(9) <= '1' & x"00";
-                            psu_status(2) <= '1';
-                        else
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";    
-                            psu_status(2) <= '0';                        
-                        end if;
-                        draw_state <= DRAW_BACKGROUND;
-                        counter <= DRAW_MODE;
-                    when NUM6 =>
-                        char_to_pixel <= "00110011";
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(3);
-                        dynamic_data_array(4) <= '1' & x"00";
-                        dynamic_data_array(5) <= underline_pos_row(4);
-                        dynamic_data_array(6) <= '1' & x"00";
-                        dynamic_data_array(7) <= underline_pos_row(5);
-
-                        if psu_status(3) = '0' then
-                            dynamic_data_array(8) <= '1' & x"F8";
-                            dynamic_data_array(9) <= '1' & x"00";
-                            psu_status(3) <= '1';
-                        else
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";    
-                            psu_status(3) <= '0';                        
-                        end if;
-                        draw_state <= DRAW_BACKGROUND;
-                        counter <= DRAW_MODE;
-                    when NUMB =>
-                        char_to_pixel <= "00110100";
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(3);
-                        dynamic_data_array(4) <= '1' & x"01";
-                        dynamic_data_array(5) <= underline_pos_row(6);
-                        dynamic_data_array(6) <= '1' & x"01";
-                        dynamic_data_array(7) <= underline_pos_row(7);
-
-                        if psu_status(4) = '0' then
-                            dynamic_data_array(8) <= '1' & x"F8";
-                            dynamic_data_array(9) <= '1' & x"00";
-                            psu_status(4) <= '1';
-                        else
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";    
-                            psu_status(4) <= '0';                        
-                        end if;
-                        draw_state <= DRAW_BACKGROUND;
-                        counter <= DRAW_MODE;
-                   when NUM9 =>
-                        char_to_pixel <= "00110101";
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(3);
-                        dynamic_data_array(4) <= '1' & x"01";
-                        dynamic_data_array(5) <= '1' & x"10";
-                        dynamic_data_array(6) <= '1' & x"01";
-                        dynamic_data_array(7) <= '1' & x"17";
-
-                        if psu_status(5) = '0' then
-                            dynamic_data_array(8) <= '1' & x"F8";
-                            dynamic_data_array(9) <= '1' & x"00";
-                            psu_status(5) <= '1';
-                        else
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";    
-                            psu_status(5) <= '0';                        
-                        end if;
-                        draw_state <= DRAW_BACKGROUND;
-                        counter <= DRAW_MODE;
-                   when NUMC =>
-                        char_to_pixel <= "00110110";
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(3);
-                        dynamic_data_array(4) <= '1' & x"01";
-                        dynamic_data_array(5) <= '1' & x"20";
-                        dynamic_data_array(6) <= '1' & x"01";
-                        dynamic_data_array(7) <= '1' & x"27";
-
-                        if psu_status(6) = '0' then
-                            dynamic_data_array(8) <= '1' & x"F8";
-                            dynamic_data_array(9) <= '1' & x"00";
-                            psu_status(6) <= '1';
-                        else
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";    
-                            psu_status(6) <= '0';                        
-                        end if;
-                        draw_state <= DRAW_BACKGROUND;
-                        counter <= DRAW_MODE;
-
-                    when NUM1 =>
-                        freq_buffer         <= input_buffer(0)*1000 + input_buffer(1)*100 + input_buffer(2)*10 + input_buffer(3);
-                        delay_timer_buffer  <= input_buffer(4)*1000 + input_buffer(5)*100 + input_buffer(6)*10 + input_buffer(7);
-                        pulse_num_buffer    <= input_buffer(8)*1000 + input_buffer(9)*100 + input_buffer(10)*10 + input_buffer(11);
-                    when NUM2 =>
-
-                    when NUM4 =>
-
-                    when NUM5 =>
-
-                    when NUM7 =>
-
-                    when NUM8 =>
-
-                    when others =>
-                        null;
-                    end case;
-
-                -- Pressing enter will shift into next digit without changing current digit. 
-                -- DRAW_INIT itself will initialize underline_integer to 1
-                -- Pressing numbers will overwrite current digit with input
-
-                when INSERT_MODE =>
-
-                    case keyin is
-                    when ENTER =>
-                        case underline_integer is
-                        when 0 =>
-                            draw_state <= DRAW_INIT;
-                            counter <= DRAW_MODE;
-                        when 1 to 12 =>
-                            draw_state <= DRAW_12;
-                            counter <= DRAW_MODE;
-                        when others =>
-                            null;
-                        end case;
-                    when NUM1 =>
-                        char_to_pixel <= "00110001";
-                        input_buffer(underline_integer-1) <= 1;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM2 =>
-                        char_to_pixel <= "00110010";
-                        input_buffer(underline_integer-1) <= 2;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM3 =>
-                        char_to_pixel <= "00110011";
-                        input_buffer(underline_integer-1) <= 3;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM4 =>
-                        char_to_pixel <= "00110100";
-                        input_buffer(underline_integer-1) <= 4;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM5 =>
-                        char_to_pixel <= "00110101";
-                        input_buffer(underline_integer-1) <= 5;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM6 =>
-                        char_to_pixel <= "00110110";
-                        input_buffer(underline_integer-1) <= 6;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM7 =>
-                        char_to_pixel <= "00110111";
-                        input_buffer(underline_integer-1) <= 7;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM8 =>
-                        char_to_pixel <= "00111000";
-                        input_buffer(underline_integer-1) <= 8;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM9 =>
-                        char_to_pixel <= "00111001";
-                        input_buffer(underline_integer-1) <= 9;
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when NUM0 =>
-                        char_to_pixel <= "00110000";
-                        draw_state <= DRAW_CHAR;
-                        counter <= DRAW_MODE;
-                    when others =>
-                        null;
-                    end case;
-
-                -- dynamic_data_array sets the rows and cols for EXEC_CASET and EXEC_PASET
-
-                -- DRAW_12 erases underline from previous digit, and draws underline under the next digit
-                -- underline_flag is initialized '1'. 
-                -- Thus, 1st iteration will erase underline, then increment underline_integer += 1, 
-                -- 2nd iteration will draw underline, then return to INSERT_MODE.
-
-                -- DRAW_CHAR sets dynamic_data_array, then jumps to CASET, PASET, then CHAR_WR
-
-                when DRAW_MODE =>
-
-                    case draw_state is
-                    when DRAW_INIT =>
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col(0);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col(0);
-                        dynamic_data_array(4) <= '1' & x"00";
-                        dynamic_data_array(5) <= underline_pos_row(0);
-                        dynamic_data_array(6) <= '1' & x"00";
-                        dynamic_data_array(7) <= underline_pos_row(1);
-                        dynamic_data_array(8) <= '1' & x"FF";
-                        dynamic_data_array(9) <= '1' & x"FF";
-                        state <= EXEC_CASET;
-                        state_register <= UNDERLINE;
-
-                        underline_integer <= 1;
-                        counter <= INSERT_MODE;
-
-                    when DRAW_12 =>
-                        
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= underline_pos_col((underline_integer-1) / 4);
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= underline_pos_col((underline_integer-1) / 4);
-                        dynamic_data_array(5) <= underline_pos_row((2*((underline_integer-1) mod 4)));
-                        dynamic_data_array(7) <= underline_pos_row((2*((underline_integer-1) mod 4))+1);
-
-                        -- underline_flag  '1'remove underline  '0'draw underline
-                        if underline_flag = '1' then
-                            dynamic_data_array(8) <= '1' & x"00";
-                            dynamic_data_array(9) <= '1' & x"00";
-                        else
-                            dynamic_data_array(8) <= '1' & x"FF";
-                            dynamic_data_array(9) <= '1' & x"FF";
-                        end if;
-
-                        -- for the last row, the pixel location is > 256, then requiring 3 digits in hex x"01XX"
-                        if ((underline_integer-1) mod 4) = 3 then
-                            dynamic_data_array(4) <= '1' & x"01";
-                            dynamic_data_array(6) <= '1' & x"01";
-                        else
-                            dynamic_data_array(4) <= '1' & x"00";
-                            dynamic_data_array(6) <= '1' & x"00";
-                        end if;
-
-                        state <= EXEC_CASET;
-                        state_register <= UNDERLINE;
-                        
-                        if underline_flag = '0' then
-                            -- 2nd iteration will draw underline, then return to INSERT_MODE.
-                            counter <= INSERT_MODE;
-                            underline_flag <= '1';
-                        elsif (underline_integer-1) = 11 then
-                            counter <= COMMAND_MODE;
-                            underline_integer <= 0;
-                        else
-                            -- 1st iteration will erase underline, then increment underline_integer += 1 
-                            underline_integer <= underline_integer + 1; 
-                            underline_flag <= '0';
-                        end if;
-
-                    when DRAW_CHAR =>
-                        if underline_flag = '1' then
-                            dynamic_data_array(0) <= '1' & x"00";
-                            dynamic_data_array(1) <= underline_pos_col(5 + ((underline_integer-1) / 4));
-                            dynamic_data_array(2) <= '1' & x"00";
-                            dynamic_data_array(3) <= underline_pos_col((underline_integer-1) / 4);
-                            dynamic_data_array(5) <= underline_pos_row((2*((underline_integer-1) mod 4)));
-                            dynamic_data_array(7) <= underline_pos_row((2*((underline_integer-1) mod 4))+1);
-
-                        -- for the last row, the pixel location is > 256, then requiring 3 digits in hex x"01XX"
-                            if ((underline_integer-1) mod 4) = 3 then
-                                dynamic_data_array(4) <= '1' & x"01";
-                                dynamic_data_array(6) <= '1' & x"01";
-                            else
-                                dynamic_data_array(4) <= '1' & x"00";
-                                dynamic_data_array(6) <= '1' & x"00";
-                            end if;
-
-                            state <= EXEC_CASET;
-                            state_register <= CHAR_WR;
-                            underline_flag <= '0';
-                        else
-                            underline_flag <= '1';
-                            --underline_integer <= underline_integer - 1;
-                            draw_state <= DRAW_12;
-                            
-                        end if;
-
-                    when DRAW_BACKGROUND =>
-
-                        state <= EXEC_CASET;
-                        state_register <= CHAR_WR;
-                        counter <= COMMAND_MODE;
+            when COMMAND_MODE =>
+            
+                state_return <= COMMAND_MODE;
+            
+                case keyin is
+                when ENTER =>
+                    state <= DRAW_MODE;
+                    if operation_feedback = '1' then
+                        operation_input <= '0';
+                    end if;
+                when NUM3 =>
+                    char_to_pixel <= "00110001";
+                    char_loc <= char_loc_array(12);
                     
-                    when DRAW_STATE5 =>
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    if psu_status(1) = '0' then
+                        backgroundColor <= x"F800";
+                        psu_status(1) <= '1';
+                    else
+                        backgroundColor <= x"0000";   
+                        psu_status(1) <= '0';                        
+                    end if;
+                    
+                when NUMA =>
+                    char_to_pixel <= "00110010";
+                    char_loc <= char_loc_array(13);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
 
-                    when DRAW_STATE6 =>
+                    if psu_status(2) = '0' then
+                        backgroundColor <= x"F800";
+                        psu_status(2) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(2) <= '0';                        
+                    end if;
 
-                    when DRAW_STATE7 =>
+                when NUM6 =>
+                    char_to_pixel <= "00110011";
+                    char_loc <= char_loc_array(14);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
 
-                    when DRAW_STATE15 =>
+                    if psu_status(3) = '0' then
+                        backgroundColor <= x"F800";
+                        psu_status(3) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(3) <= '0';                        
+                    end if;
+                    
+                when NUMB =>
+                    char_to_pixel <= "00110100";
+                    char_loc <= char_loc_array(15);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
 
-                    when others =>
-                        null;
-                    end case;
+                    if psu_status(4) = '0' then
+                        backgroundColor <= x"F800";
+                        psu_status(4) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(4) <= '0';                        
+                    end if;
+                    
+               when NUM9 =>
+                    char_to_pixel <= "00110101";
+                    char_loc <= char_loc_array(16);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+
+                    if psu_status(5) = '0' then
+                        backgroundColor <= x"F800";
+                        psu_status(5) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(5) <= '0';                        
+                    end if;
+               when NUMC =>
+                    char_to_pixel <= "00110110";
+                    char_loc <= char_loc_array(17);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+
+                    if psu_status(6) = '0' then
+                        backgroundColor <= x"F800";
+                        psu_status(6) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(6) <= '0';                        
+                    end if;
+
+                when NUM1 =>
+                
+                    char_to_pixel <= "00100000";
+                    char_loc     <= char_loc_array(18);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    word_array(0) <= x"45";
+                    word_array(1) <= x"4E";
+                    word_array(2) <= "00100000";
+                    cont_num <= 3;
+                    if psu_status(7) = '0' then
+                        backgroundColor <= x"5022";
+                        psu_status(7) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(7) <= '0';                        
+                    end if;                    
+
+                when NUM2 =>
+                    char_to_pixel <= "00100000";
+                    char_loc     <= char_loc_array(21);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    word_array(0) <= x"44";
+                    word_array(1) <= x"49";
+                    word_array(2) <= x"53";
+                    word_array(3) <= "00100000";
+                    cont_num <= 4;
+                    if psu_status(8) = '0' then
+                        backgroundColor <= x"5022";
+                        psu_status(8) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(8) <= '0';                        
+                    end if;  
+                    
+                when NUM4 =>
+                    char_to_pixel <= "00100000";
+                    char_loc     <= char_loc_array(19);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    word_array(0) <= x"4F";
+                    word_array(1) <= x"4E";
+                    word_array(2) <= "00100000";
+                    cont_num <= 3;
+                    if psu_status(9) = '0' then
+                        backgroundColor <= x"5022";
+                        psu_status(9) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(9) <= '0';                        
+                    end if;   
+
+                when NUM5 =>
+                    char_to_pixel <= "00100000";
+                    char_loc     <= char_loc_array(22);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    word_array(0) <= x"4F";
+                    word_array(1) <= x"46";
+                    word_array(2) <= x"46";
+                    word_array(3) <= "00100000";
+                    cont_num <= 4;
+                    if psu_status(10) = '0' then
+                        backgroundColor <= x"5022";
+                        psu_status(10) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(10) <= '0';                        
+                    end if;  
+
+                when NUM7 =>
+                    char_to_pixel <= "00100000";
+                    char_loc     <= char_loc_array(20);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    word_array(0) <= x"4F";
+                    word_array(1) <= x"4E";
+                    word_array(2) <= "00100000";
+                    cont_num <= 3;
+                    if psu_status(11) = '0' then
+                        backgroundColor <= x"5022";
+                        psu_status(11) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(11) <= '0';                        
+                    end if;  
+                    
+                when NUM8 =>
+
+                    char_to_pixel <= "00100000";
+                    char_loc     <= char_loc_array(23);
+                    
+                    input_overwrite <= '1';
+                    state <= INPUT_TO_BUF;
+                    
+                    word_array(0) <= x"4F";
+                    word_array(1) <= x"46";
+                    word_array(2) <= x"46";
+                    word_array(3) <= "00100000";
+                    cont_num <= 4;
+                    if psu_status(12) = '0' then
+                        backgroundColor <= x"5022";
+                        psu_status(12) <= '1';
+                    else
+                        backgroundColor <= x"0000";  
+                        psu_status(12) <= '0';                        
+                    end if;  
+
+                when NUM_STAR =>
+                    -- firing
+                    freq_buffer_reg         <=  (input_buffer(0) & "0000000000") - ((input_buffer(0) & "0000") + (input_buffer(0) & "000")) +  -- 1000x
+                                                (input_buffer(1) & "0000000")    - ((input_buffer(1) & "0000") + (input_buffer(1) & "000") + (input_buffer(1) & "00")) +  -- 100x
+                                                (input_buffer(2) & "000")        + (input_buffer(2) & "0") +                                                              -- 10x
+                                                input_buffer(3);                                                                                                         -- 1x
+                                        
+                    delay_timer_buffer_reg  <=  (input_buffer(4) & "0000000000") - ((input_buffer(4) & "0000") + (input_buffer(4) & "000")) +  -- 1000x
+                                                (input_buffer(5) & "0000000")    - ((input_buffer(5) & "0000") + (input_buffer(5) & "000") + (input_buffer(5) & "00")) +  -- 100x
+                                                (input_buffer(6) & "000")        + (input_buffer(6) & "0") +                                                              -- 10x
+                                                input_buffer(7);                                                                                                         -- 1x
+                                            
+                    pulse_num_buffer_reg    <=  (input_buffer(4) & "0000000000") - ((input_buffer(4) & "0000") + (input_buffer(4) & "000")) +  -- 1000x
+                                                (input_buffer(5) & "0000000")    - ((input_buffer(5) & "0000") + (input_buffer(5) & "000") + (input_buffer(5) & "00")) +  -- 100x
+                                                (input_buffer(6) & "000")        + (input_buffer(6) & "0") +                                                              -- 10x
+                                                input_buffer(7);                                                                                                         -- 1x
+                    if operation_feedback = '0' then
+                        operation_input <= '1';
+                    else
+                        operation_input <= '0';
+                    end if;
+                    
+                when NUM_HASH =>
+                    currentRowNumber_reg <= 0;
+                    currentPage <= '1';
+                    psu_status(6) <= '1';
+                    state <= LOAD_PAGE;
+                    state_return <= VISUAL_MODE;
 
                 when others =>
                     null;
                 end case;
 
-            when EXEC_CASET =>
-                
-                if oled_request_reg = '0' then
-                    oled_request_reg <= '1';        
-                elsif oled_ready = '1' then
-                    oled_request_reg <= '0';
-                    if sendDataIndex = 0 then
-                        cmd_controller <= '0' & x"2A";
-                        sendDataIndex <= sendDataIndex + 1;
-                    elsif sendDataIndex <= sendDataBytes then
-                        cmd_controller <= dynamic_data_array(sendDataIndex-1);
-                        sendDataIndex <= sendDataIndex + 1;
-
-                    else
-                        sendDataIndex <= 0;
-                        dynamic_data_array(0) <= dynamic_data_array(4);
-                        dynamic_data_array(1) <= dynamic_data_array(5);
-                        dynamic_data_array(2) <= dynamic_data_array(6);
-                        dynamic_data_array(3) <= dynamic_data_array(7);
-                        dynamic_data_array(4) <= '1' & x"00";
-                        dynamic_data_array(5) <= '1' & x"00";
-                        dynamic_data_array(6) <= '1' & x"00";
-                        dynamic_data_array(7) <= '1' & x"00";
-                        state <= EXEC_PASET;
-                    end if;
- 
-                end if;
-
-            when EXEC_PASET =>
-
-                if oled_request_reg = '0' then
-                    oled_request_reg <= '1';        
-                elsif oled_ready = '1' then
-                    oled_request_reg <= '0';
-                    if sendDataIndex = 0 then
-                        cmd_controller <= '0' & x"2B";
-                        sendDataIndex <= sendDataIndex + 1;
-                    elsif sendDataIndex <= sendDataBytes then
-                        cmd_controller <= dynamic_data_array(sendDataIndex-1);
-                        sendDataIndex <= sendDataIndex + 1;
-                    else
-                        sendDataIndex <= 0;
-                        dynamic_data_array(0) <= '1' & x"00";
-                        dynamic_data_array(1) <= '1' & x"00";
-                        dynamic_data_array(2) <= '1' & x"00";
-                        dynamic_data_array(3) <= '1' & x"00";
-
-                        state <= state_register;
-                    end if;
-
-                end if;
-
-            when EXEC_RAMWR =>
+            -- see voltage status
+            when VISUAL_MODE =>
             
+                case keyin is
+                when ENTER =>
+
+                when NUM3 =>
+                    
+                when NUMA =>
+
+                when NUM6 =>
+                    
+                when NUMB =>
+                    
+                when NUM9 =>
+
+                when NUMC =>
+
+                when NUM1 =>
+
+                when NUM2 =>
+                    
+                when NUM4 =>
+
+                when NUM5 =>
+
+                when NUM7 =>
+
+                when NUM8 =>
+
+                when NUM_STAR =>
+                    
+                when NUM_HASH =>
+                    currentRowNumber_reg <= 0;
+                    currentPage <= '0';
+                    psu_status(6) <= '0';                        
+                    state <= LOAD_PAGE;
+                    state_return <= COMMAND_MODE;
+
+                when others =>
+                    null;
+                end case;
+
+            -- INSERT MODE is similar to how lab power supply work, will iterate through all digits and allow user to edit
+            when INSERT_MODE =>
+            
+                case keyin is
+                when ENTER =>
+                    state <= DRAW_MODE;
+                when NUM1 =>
+                    char_to_pixel <= "00110001";
+                    input_buffer(underline_integer-1) <= "0001";
+                    state <= DRAW_MODE;
+                when NUM2 =>
+                    char_to_pixel <= "00110010";
+                    input_buffer(underline_integer-1) <= "0010";
+                    state <= DRAW_MODE;
+                when NUM3 =>
+                    char_to_pixel <= "00110011";
+                    input_buffer(underline_integer-1) <= "0011";
+                    state <= DRAW_MODE;
+                when NUM4 =>
+                    char_to_pixel <= "00110100";
+                    input_buffer(underline_integer-1) <= "0100";
+                    state <= DRAW_MODE;
+                when NUM5 =>
+                    char_to_pixel <= "00110101";
+                    input_buffer(underline_integer-1) <= "0101";
+                    state <= DRAW_MODE;
+                when NUM6 =>
+                    char_to_pixel <= "00110110";
+                    input_buffer(underline_integer-1) <= "0110";
+                    state <= DRAW_MODE;
+                when NUM7 =>
+                    char_to_pixel <= "00110111";
+                    input_buffer(underline_integer-1) <= "0111";
+                    state <= DRAW_MODE;
+                when NUM8 =>
+                    char_to_pixel <= "00111000";
+                    input_buffer(underline_integer-1) <= "1000";
+                    state <= DRAW_MODE;
+                when NUM9 =>
+                    char_to_pixel <= "00111001";
+                    input_buffer(underline_integer-1) <= "1001";
+                    state <= DRAW_MODE;
+                when NUM0 =>
+                    char_to_pixel <= "00110000";
+                    input_buffer(underline_integer-1) <= "0000";
+                    state <= DRAW_MODE;
+                when others =>
+                    null;
+                end case;
+
+            -- DRAW_MODE checks if underline is drawn, otherwise just shift the underline.
+            when DRAW_MODE =>
+
+                if(underline_integer = 0) then
+                    char_to_pixel <= "01011111";
+--                         char_row * 16 , char_col * 8 * 240
+                    char_loc        <= char_loc_array(0);
+                    state           <= INPUT_TO_BUF;
+
+                    underline_integer <= 1;
+                    state_return <= INSERT_MODE;
+                else
+                    char_loc    <= char_loc_array(underline_integer-1);
+                    backgroundColor     <= x"0000";
+
+                    if underline_flag = '1' then
+                        case input_buffer(underline_integer-1) is
+                        when "0000" => char_to_pixel <= x"30";
+                        when "0001" => char_to_pixel <= x"31";
+                        when "0010" => char_to_pixel <= x"32";
+                        when "0011" => char_to_pixel <= x"33";
+                        when "0100" => char_to_pixel <= x"34";
+                        when "0101" => char_to_pixel <= x"35";
+                        when "0110" => char_to_pixel <= x"36";
+                        when "0111" => char_to_pixel <= x"37";
+                        when "1000" => char_to_pixel <= x"38";
+                        when "1001" => char_to_pixel <= x"39";
+                        when others => char_to_pixel <= x"30";
+                        end case;
+                        
+                        input_overwrite <= '1';
+                    else
+                        char_to_pixel <= "01011111";
+                    end if;
+
+                    state <= INPUT_TO_BUF;
+                    
+                    if underline_flag = '0' then
+                        -- 2nd iteration will draw underline, then return to INSERT_MODE.
+                        state_return <= INSERT_MODE;
+                        underline_flag <= '1';
+                    elsif (underline_integer-1) = 11 then
+                        state_return <= COMMAND_MODE;
+                        underline_integer <= 0;
+                    else
+                        -- 1st iteration will erase underline, then increment underline_integer += 1 
+                        underline_integer <= underline_integer + 1; 
+                        underline_flag <= '0';
+                        state_return <= DRAW_MODE;
+                    end if;
+
+               end if;
+
+            -- writes to the buffer, the pixels with '1'. 
+            -- to redraw background, input_overwrite needs to be set to '1'
+            -- color palette is set based on 2 signals.
+            when INPUT_TO_BUF => 
+            if sendDataIndex = 0 then
+                sendDataIndex       <= sendDataIndex + 1;
+                pixelCounter        <= 0;
+                pixel_col           <= 0;
+                char_pos_count      <= 0;
+
+            elsif pixelCounter <= 127 then
+
+                    if frameBufferLowNibble = '0' then
+                        if inPixelData(pixelCounter) = '1' then
+                            scr_addr    <= std_logic_vector(to_unsigned(char_loc + pixel_col*240 + char_pos_count*1920 + pixelCounter mod 16  ,17));
+                            scr_wea     <= "1";
+                            scr_din     <= letterColor;
+                        elsif input_overwrite = '1' then
+                            scr_addr    <= std_logic_vector(to_unsigned(char_loc + pixel_col*240 + char_pos_count*1920 + pixelCounter mod 16  ,17));
+                            scr_wea     <= "1";
+                            scr_din     <= backgroundColor;
+                        end if;
+                        
+                        if pixelCounter mod 16 = 15 then
+                            pixel_col <= pixel_col + 1;
+                        end if;
+                        
+                        if pixelCounter = 127 and char_pos_count < cont_num then
+                            char_pos_count <= char_pos_count + 1;
+                            char_to_pixel <= word_array(char_pos_count);
+                            pixelCounter <= 0;
+                            pixel_col <= 0;
+                        else
+                            pixelCounter <= pixelCounter + 1;
+                        end if;
+                    end if;
+                    frameBufferLowNibble <= not frameBufferLowNibble;
+                else
+                    scr_wea         <= "0";
+                    input_overwrite <= '0';
+                    cont_num        <= 0;
+                    sendDataIndex   <= 0;
+                    state           <= PREP;
+                end if;
+
+            -- PREP executes the exec_caset, exec_paset before going into WR_FROM_BUF
+            when PREP =>
+
                 if oled_request_reg = '0' then
                     oled_request_reg <= '1';        
                 elsif oled_ready = '1' then
                     oled_request_reg <= '0';
-                    if sendDataIndex = 0 then
-                        cmd_controller <= '0' & x"2C";
+                    if sendDataIndex < 10 then
+                        cmd_controller <= exec_seq(sendDataIndex);
                         sendDataIndex <= sendDataIndex + 1;
-                        pixelCounter <= 0;
-                        wordCounter <= 0;
-                        counterPerPixel <= 0;
-
-                    elsif pixelCounter < 5120 then
-
-                        if inPixelData(counterPerPixel) = '1' then
-
-                            if frameBufferLowNibble = '0' then
-                                cmd_controller <= '1' & x"FF";
-                                pixelCounter <= pixelCounter + 1;
-                                if counterPerPixel = 127 then
-                                    if wordCounter < 39 then
-                                        wordCounter <= wordCounter + 1;
-                                    end if;
-                                        counterPerPixel <= 0;
-                                else
-                                    counterPerPixel <= counterPerPixel + 1;
-                                end if;
-                            else
-                                cmd_controller <= '1' & x"FF";
-                            end if;
-
-                            frameBufferLowNibble <= not frameBufferLowNibble;
-                        
-                        elsif inPixelData(counterPerPixel) = '0' then
-
-                            if frameBufferLowNibble = '0' then
-                                cmd_controller <= '1' & x"00";
-                                pixelCounter <= pixelCounter + 1;
-
-                                if counterPerPixel = 127 then
-                                    if wordCounter < 39 then
-                                        wordCounter <= wordCounter + 1;
-                                    end if;                                        
-                                    counterPerPixel <= 0;
-                                else
-                                    counterPerPixel <= counterPerPixel + 1;
-                                end if;
-
-                            else
-                                cmd_controller <= '1' & x"00";
-                            end if;
-                            frameBufferLowNibble <= not frameBufferLowNibble;
-                        end if;
-
                     else
                         sendDataIndex <= 0;
-                        wordCounter <= 0;
-                        counter <= counter + 1;
-                        currentRowNumber_reg <= currentRowNumber_reg + 1;
-                        state <= LOP;
+                        state <= WR_FROM_BUF;
                     end if;
-
                 end if;
-
-            when CHAR_WR =>
+                 
+            -- WR_FROM_BUF executes exec_ramwr and writes full screen from buffer
+            -- currentRowNumber is set to 16, so the char_to_pixel can be accessed by other states (see top.vhd)       
+            when WR_FROM_BUF =>
                 
                 if oled_request_reg = '0' then
                     oled_request_reg <= '1';        
@@ -713,79 +779,32 @@ begin
                         cmd_controller <= '0' & x"2C";
                         sendDataIndex <= sendDataIndex + 1;
                         pixelCounter <= 0;
+                        scr_addr <= (others => '0');
 
-                    elsif pixelCounter < 127 then
+                    elsif pixelCounter < 76800 then
 
-                        if charPixelData(pixelCounter) = '1' then
-
-                            if frameBufferLowNibble = '0' then
-                                cmd_controller <= '1' & x"FF";
-                                pixelCounter <= pixelCounter + 1;
-
-                            else
-                                cmd_controller <= '1' & x"FF";
-                            end if;
-
-                            frameBufferLowNibble <= not frameBufferLowNibble;
-                        
-                        elsif charPixelData(pixelCounter) = '0' then
-
-                            if frameBufferLowNibble = '0' then
-                                cmd_controller <= dynamic_data_array(8);
-                                pixelCounter <= pixelCounter + 1;
-
-                            else
-                                cmd_controller <= dynamic_data_array(9);
-                            end if;
-                            frameBufferLowNibble <= not frameBufferLowNibble;
-                        end if;
-
-                    else
-                        sendDataIndex <= 0;
-                        dynamic_data_array(8) <= '1' & x"00";
-                        dynamic_data_array(9) <= '1' & x"00";
-                        state <= DONE;
-                    end if;
-
-                end if;
-
-            when UNDERLINE =>
-                
-                if oled_request_reg = '0' then
-                    oled_request_reg <= '1';        
-                elsif oled_ready = '1' then
-                    oled_request_reg <= '0';
-                    if sendDataIndex = 0 then
-                        cmd_controller <= '0' & x"2C";
-                        sendDataIndex <= sendDataIndex + 1;
-                        pixelCounter <= 0;
-
-                    elsif pixelCounter < 8 then
+                        scr_addr <= std_logic_vector(to_unsigned(pixelCounter, 17));
 
                         if frameBufferLowNibble = '0' then
-                            cmd_controller <= dynamic_data_array(8);
-                            pixelCounter <= pixelCounter + 1;
+                            cmd_controller  <= '1' & scr_dout(15 downto 8);
+                            pixelCounter    <= pixelCounter + 1;
                         else
-                            cmd_controller <= dynamic_data_array(9);
+                            cmd_controller  <= '1' & scr_dout(7 downto 0);
                         end if;
-
                         frameBufferLowNibble <= not frameBufferLowNibble;
 
                     else
                         sendDataIndex <= 0;
-                        dynamic_data_array(8) <= '1' & x"00";
-                        dynamic_data_array(9) <= '1' & x"00";
-                        state <= DONE;      -- state <= LOP also works, but just in case, put DONE for now
-                    end if;
+                        
+                        -- DONE --
+                        currentRowNumber <= 16;
+                        oled_request_reg <= '1';
+                        state     <= state_return;
 
+                    end if;
                 end if;
 
-            when DONE =>
-                oled_request_reg <= '1';
-                --exec_done <= '1';
-                state     <= LOP;
-                --counter <= counter + 1;
-
+                
             when others =>
                 null;
             end case;

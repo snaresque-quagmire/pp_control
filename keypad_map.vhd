@@ -4,7 +4,6 @@ use ieee.numeric_std.all;
 
 entity keypad_map is
     port(
-        row_index       : in    integer range 0 to 3;
         debounced_col   : in    std_logic_vector(15 downto 0);
         decoded_btn     : out   std_logic_vector(4 downto 0)
     );

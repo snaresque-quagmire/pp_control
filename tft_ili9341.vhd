@@ -19,8 +19,7 @@ entity tft_ili9341 is
 
         cmd_controller      : in    std_logic_vector(8 downto 0);
         oled_ready          : out   std_logic;
-        oled_request        : in    std_logic;
-        exec_done           : in    std_logic
+        oled_request        : in    std_logic
     );
 end entity;
 
@@ -195,10 +194,7 @@ begin
 
                     when LOP =>
 
-                        if exec_done = '1' then
-                            null;
-
-                        elsif oled_request = '1' then
+                        if oled_request = '1' then
                             oled_ready <= '1';
                         
                         elsif oled_request = '0' then

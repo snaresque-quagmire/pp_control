@@ -9,24 +9,17 @@ entity debounce_module is
         D           : in    std_logic_vector(15 downto 0);
         Q           : out   std_logic_vector(15 downto 0) := (others => '0')
     );
-
 end entity;
 
-
 architecture rtl of debounce_module is
-
 begin
 
     process(clk)
     begin
-
         if (rising_edge(clk)) then
             if(clk_enable = '1') then
                 Q <= D;
             end if;
         end if;
-
     end process;
-
 end architecture;
-

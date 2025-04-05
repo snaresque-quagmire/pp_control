@@ -97,9 +97,16 @@ set_property PACKAGE_PIN U18 [get_ports {reset}]
 #set_property PACKAGE_PIN A15 [get_ports {JB[4]}]					
 	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[4]}]
 ##Sch name = JB8 A17
-set_property PACKAGE_PIN A14 [get_ports {a4_vtrig}]					
+
+# IOB improves jitter
+# PULLTYPE NONE is push-pull
+
+set_property PACKAGE_PIN A17 [get_ports {a4_vtrig}]					
 	set_property IOSTANDARD LVCMOS33 [get_ports {a4_vtrig}]
 	set_property  PULLDOWN true [get_ports {a4_vtrig}]
+	set_property  DRIVE 16 [get_ports {a4_vtrig}]
+	set_property  SLEW FAST [get_ports {a4_vtrig}]
+	set_property  IOB TRUE [get_ports {a4_vtrig}]
 
 ##Sch name = JB9
 #set_property PACKAGE_PIN C15 [get_ports {a5_vchg}]
