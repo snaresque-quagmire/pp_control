@@ -19,7 +19,11 @@ entity tft_controller is
         operation_input     : out   std_logic;
         operation_feedback  : in    std_logic;
         char_to_pixel       : out   std_logic_vector(7 downto 0);
-        currentPage         : out   std_logic
+        currentPage         : out   std_logic;
+        voltageCh1          : in    std_logic_vector(11 downto 0);
+        voltageCh2          : in    std_logic_vector(11 downto 0);
+        adcEnable           : in    std_logic;
+        adcEnable_reg       : out   std_logic
     );
 end entity;
 
@@ -36,19 +40,24 @@ architecture rtl of tft_controller is
     constant DRAW_MODE          : std_logic_vector(3 downto 0)      := "0111";
     constant INSERT_MODE        : std_logic_vector(3 downto 0)      := "1000";
     constant VISUAL_MODE        : std_logic_vector(3 downto 0)      := "1001";
+    constant READ_ADC           : std_logic_vector(3 downto 0)      := "1010";
     signal state                : std_logic_vector(3 downto 0)      := IDLE;
     signal state_return         : std_logic_vector(3 downto 0)      := IDLE;
+
+    constant ADC1               : unsigned(1 downto 0)              := "00";
+    constant ADC2               : unsigned(1 downto 0)              := "01";
+    signal adc_poll             : unsigned(1 downto 0)              := ADC1;
 
     -- buffer for user input digits
     type buffer_array is array(0 to 11) of unsigned(3 downto 0);
     signal input_buffer         : buffer_array;
     
     -- buffer to store pre-calculated pixel mapping
-    type loc_array is array(0 to 24) of integer;
+    type loc_array is array(0 to 25) of integer;
     signal char_loc_array            : loc_array;
 
     -- buffer to write multiple letters in one button press
-    type dynamic_word_array is array(0 to 4) of std_logic_vector(7 downto 0);
+    type dynamic_word_array is array(0 to 5) of std_logic_vector(7 downto 0);
     signal word_array               : dynamic_word_array;
 
     -- key_code states
@@ -85,7 +94,7 @@ architecture rtl of tft_controller is
     signal pixelCounter         :   integer                         := 0;
     signal char_pos_count       :   integer                         := 0;
     signal pixel_in_char_count  :   integer range 0 to 127          := 0;
-    signal cont_num             :   integer range 0 to 5            := 0;
+    signal cont_num             :   integer range 0 to 6            := 0;
     signal pixel_col            :   integer range 0 to 320          := 0;
     signal frameBufferLowNibble :   std_logic                       := '1';
     signal inPixelData          : std_logic_vector(127 downto 0);
@@ -107,6 +116,10 @@ architecture rtl of tft_controller is
     signal input_overwrite      : std_logic                         := '0';
     signal letterColor          : std_logic_vector(15 downto 0)     := x"FFFF";
     signal backgroundColor      : std_logic_vector(15 downto 0)     := x"0000";
+
+    signal thousandsCh1, hundredsCh1, tensCh1, unitsCh1 : std_logic_vector(7 downto 0) := (others => '0');
+    signal thousandsCh2, hundredsCh2, tensCh2, unitsCh2 : std_logic_vector(7 downto 0) := (others => '0');
+    signal delayCounter                                 : unsigned(27 downto 0)         := (others => '0');
 
     -- exec_caset, exec_paset sequence. This is same for all cases as whole screen is rewritten every time.
     type caset_paset_seq is array(0 to 9) of std_logic_vector(8 downto 0);
@@ -146,6 +159,26 @@ begin
         dina    => scr_din,
         douta   => scr_dout
     );
+    
+    dec1 : entity work.toDec
+        port map(
+            clk         => clk,
+            value       => voltageCh1,
+            thousands   => thousandsCh1,
+            hundreds    => hundredsCh1,
+            tens        => tensCh1,
+            unit        => unitsCh1
+        );
+
+    dec2 : entity work.toDec
+        port map(
+            clk         => clk,
+            value       => voltageCh2,
+            thousands   => thousandsCh2,
+            hundreds    => hundredsCh2,
+            tens        => tensCh2,
+            unit        => unitsCh2
+        );
     
     -- signals that are specified to be "out", cannot be read directly, need a register.
     wordAddress         <= char_pos_count;
@@ -201,7 +234,8 @@ begin
                 char_loc_array(21) <= 63520;
                 char_loc_array(22) <= 63536;
                 char_loc_array(23) <= 63552;
-                char_loc_array(24) <= 63568;
+                char_loc_array(24) <= 19264;
+                char_loc_array(25) <= 19280;
 
                 -- initialize word_array
                 word_array(0)           <= (others => '0');
@@ -539,10 +573,10 @@ begin
                                                 (input_buffer(6) & "000")        + (input_buffer(6) & "0") +                                                              -- 10x
                                                 input_buffer(7);                                                                                                         -- 1x
                                             
-                    pulse_num_buffer_reg    <=  (input_buffer(4) & "0000000000") - ((input_buffer(4) & "0000") + (input_buffer(4) & "000")) +  -- 1000x
-                                                (input_buffer(5) & "0000000")    - ((input_buffer(5) & "0000") + (input_buffer(5) & "000") + (input_buffer(5) & "00")) +  -- 100x
-                                                (input_buffer(6) & "000")        + (input_buffer(6) & "0") +                                                              -- 10x
-                                                input_buffer(7);                                                                                                         -- 1x
+                    pulse_num_buffer_reg    <=  (input_buffer(8) & "0000000000") - ((input_buffer(8) & "0000") + (input_buffer(8) & "000")) +  -- 1000x
+                                                (input_buffer(9) & "0000000")    - ((input_buffer(9) & "0000") + (input_buffer(9) & "000") + (input_buffer(5) & "00")) +  -- 100x
+                                                (input_buffer(10) & "000")        + (input_buffer(10) & "0") +                                                              -- 10x
+                                                input_buffer(11);                                                                                                         -- 1x
                     if operation_feedback = '0' then
                         operation_input <= '1';
                     else
@@ -563,6 +597,14 @@ begin
             -- see voltage status
             when VISUAL_MODE =>
             
+                if delayCounter = x"2FAF080" then
+                    adcEnable_reg <= '1';       
+                    state <= READ_ADC;
+                    delayCounter <= (others => '0');
+                else
+                    delayCounter <= delayCounter + 1;
+                end if;
+                
                 case keyin is
                 when ENTER =>
 
@@ -593,16 +635,67 @@ begin
                 when NUM_STAR =>
                     
                 when NUM_HASH =>
+                    psu_status <= (others => '0');
                     currentRowNumber_reg <= 0;
                     currentPage <= '0';
                     psu_status(6) <= '0';                        
                     state <= LOAD_PAGE;
                     state_return <= COMMAND_MODE;
-
+                    delayCounter <= (others => '0');
                 when others =>
                     null;
                 end case;
 
+            when READ_ADC =>
+
+                case adc_poll is
+                
+                when ADC1 =>                
+                    if adcEnable = '0' then
+                        adcEnable_reg <= '0';
+                        char_to_pixel <= thousandsCh1;
+                        char_loc     <= char_loc_array(24);
+                        
+                        input_overwrite <= '1';
+                        state <= INPUT_TO_BUF;
+                        
+                        backgroundColor <= x"0000";
+                        word_array(0) <= "00100000";
+                        word_array(1) <= hundredsCh1;
+                        word_array(2) <= "00100000";
+                        word_array(3) <= tensCh1;
+                        word_array(4) <= "00100000";
+                        word_array(5) <= unitsCh1;
+                        cont_num <= 6;
+                        state_return <= READ_ADC;
+                        adc_poll <= adc_poll + 1;
+                    end if;
+                when ADC2 =>
+                
+                    if adcEnable = '0' then
+                        char_to_pixel <= thousandsCh2;
+                        char_loc     <= char_loc_array(25);
+                        
+                        input_overwrite <= '1';
+                        state <= INPUT_TO_BUF;
+                        
+                         backgroundColor <= x"0000";
+
+                        word_array(0) <= "00100000";
+                        word_array(1) <= hundredsCh2;
+                        word_array(2) <= "00100000";
+                        word_array(3) <= tensCh2;
+                        word_array(4) <= "00100000";
+                        word_array(5) <= unitsCh2;
+                        cont_num <= 6;
+                        state_return <= VISUAL_MODE;
+                        adc_poll <= (others => '0');
+                    end if;
+                    
+                when others =>
+                    null;                
+                end case;
+                
             -- INSERT MODE is similar to how lab power supply work, will iterate through all digits and allow user to edit
             when INSERT_MODE =>
             

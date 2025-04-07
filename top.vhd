@@ -18,7 +18,9 @@ entity top is
         LED_out         : out std_logic_vector (6 downto 0);
         a4_vtrig        : out std_logic;
         --a5_vchg         : out std_logic;
-        logic_shift_en  : out std_logic
+        logic_shift_en  : out std_logic;
+        i2cSda          : inout std_logic;
+        i2cScl          : out std_logic
     );
 end entity top;
 
@@ -83,6 +85,32 @@ architecture rtl of top is
     signal load_page2_hex           :   std_logic_vector(7 downto 0)    := (others => '0');
     signal row_times_40             :   unsigned(9 downto 0)            := (others => '0');
     signal row_plus_addr            :   unsigned(9 downto 0)            := (others => '0');
+
+    signal i2cInstruction       : std_logic_vector(1 downto 0)      := (others => '0');
+    signal i2cByteToSend        : std_logic_vector(7 downto 0)      := (others => '0');
+    signal i2cByteReceived      : std_logic_vector(7 downto 0)      := (others => '0');
+    signal i2cComplete          : std_logic                         := '0';
+    signal i2cEnable            : std_logic                         := '0';
+    signal sdaIn                : std_logic                         := '0';
+    signal sdaOut               : std_logic                         := '1';
+    signal isSending            : std_logic                         := '0';
+
+    signal adcChannel           : std_logic_vector(1 downto 0)      := (others => '0');
+    signal adcOutputData        : std_logic_vector(15 downto 0)     := (others => '0');
+    signal adcDataReady         : std_logic                         := '1';
+    signal adcEnable            : std_logic                         := '0';
+    signal adcEnable_reg        : std_logic                         := '0';
+
+    signal adcOutputBufferCh1   : std_logic_vector(15 downto 0)     := (others => '0');
+    signal adcOutputBufferCh2   : std_logic_vector(15 downto 0)     := (others => '0');
+    signal voltageCh1           : std_logic_vector(11 downto 0)     := (others => '0');
+    signal voltageCh2           : std_logic_vector(11 downto 0)     := (others => '0');
+
+    constant STATE_TRIGGER_CONV             : std_logic_vector(1 downto 0)      := "00";
+    constant STATE_WAIT_FOR_START           : std_logic_vector(1 downto 0)      := "01";
+    constant STATE_SAVE_VALUE_WHEN_READY    : std_logic_vector(1 downto 0)      := "10";
+
+    signal drawState                        : std_logic_vector(1 downto 0)      := (others => '0');
 
     component clk_wiz_0
     port
@@ -173,7 +201,11 @@ begin
             operation_input     => operation_input,
             operation_feedback  => operation_feedback,           
             char_to_pixel       => char_to_pixel,
-            currentPage         => currentPage
+            currentPage         => currentPage,
+            voltageCh1          => voltageCh1,
+            voltageCh2          => voltageCh2,
+            adcEnable           => adcEnable,
+            adcEnable_reg       => adcEnable_reg
         );
 
     scanner : entity work.keypad_scanner
@@ -212,6 +244,96 @@ begin
             delay_timer_buffer  => delay_timer_buffer,
             pulse_num_buffer    => pulse_num_buffer
         );
+
+    i2c : entity work.i2c
+        port map(
+            clk             => clk,
+            sdaIn           => sdaIn,
+            sdaOut          => sdaOut,
+            isSending       => isSending,
+            scl             => i2cScl,
+            instruction     => i2cInstruction,
+            enable          => i2cEnable,
+            byteToSend      => i2cByteToSend,
+            byteReceived    => i2cByteReceived,
+            complete        => i2cComplete
+        );
+
+    adc_inst : entity work.adc
+        generic map(
+            address         => "1001001"
+        )
+        port map(
+            clk             => clk,
+            channel         => adcChannel,
+            outputData      => adcOutputData,
+            dataReady       => adcDataReady,
+            enable          => adcEnable,
+            instructionI2C  => i2cInstruction,
+            enableI2C       => i2cEnable,
+            byteToSendI2C   => i2cByteToSend,
+            byteReceivedI2C => i2cByteReceived,
+            completeI2C     => i2cComplete
+        );
+
+    process(isSending, sdaOut)
+    begin
+        if(isSending = '1' and sdaOut = '0') then
+            i2cSda <= '0';
+        else
+            i2cSda <= 'Z';
+        end if;
+    end process;
+
+    sdaIn <= i2cSda;
+
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            case drawState is
+            when STATE_TRIGGER_CONV =>
+                if adcEnable_reg <= '1' then
+                    adcEnable <= '1';
+                    drawState <= STATE_WAIT_FOR_START;
+                end if;
+
+            when STATE_WAIT_FOR_START => 
+                if adcDataReady = '0' then
+                    drawState <= STATE_SAVE_VALUE_WHEN_READY;
+                end if;
+
+            when STATE_SAVE_VALUE_WHEN_READY =>
+                if adcDataReady = '1' then
+                    if adcChannel(0) = '1' then
+
+                        adcChannel <= "00";
+                        adcOutputBufferCh2 <= adcOutputData;
+                        if adcOutputBufferCh2(15) = '1' then
+                            voltageCh2 <= (others => '0');
+                        else
+                            voltageCh2 <= adcOutputBufferCh2(14 downto 3);
+                        end if;
+                    else
+
+                        adcChannel <= "01";
+                        adcOutputBufferCh1 <= adcOutputData;
+                        if adcOutputBufferCh1(15) = '1' then
+                            voltageCh1 <= (others => '0');
+                        else
+                            voltageCh1 <= adcOutputBufferCh1(14 downto 3);
+                        end if;
+                    end if;
+
+                    drawState <= STATE_TRIGGER_CONV;
+                    adcEnable <= '0';
+                end if;
+            when others =>
+                null;
+
+            end case;
+
+        end if;
+    end process;
 
     -- string is not synthesizable (cannot be input), can be work by using brute force generic.
 
